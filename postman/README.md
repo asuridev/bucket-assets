@@ -42,6 +42,10 @@ carpeta `postman/` de este repo y marca *Allow reading files outside working dir
 Entonces basta con escribir `image1.png` en el campo `file` y queda guardado en la
 colección.
 
+No hace falta declarar el Content-Type del fichero: el servicio lo deduce de la extensión de
+`fileName`. La única petición que lo declara es la del 422, porque `.txt` no está entre las
+extensiones conocidas y es justo el rechazo que demuestra.
+
 ## Orden de ejecución
 
 Las peticiones de **2. Errores** dependen de que el archivo exista, así que lanza antes

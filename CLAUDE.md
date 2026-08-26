@@ -44,7 +44,7 @@ class, use these annotations, not `@Component`/`@Service`.
 ```
 domain/            Java puro
   errors/           DomainException + typed subclasses (each maps to an HTTP status)
-  storage/          FileStorage port, ObjectKey, StoredFile/StoredObject, BucketPolicy, StoragePolicies
+  storage/          FileStorage port, ObjectKey, ContentTypes, StoredFile/StoredObject, BucketPolicy, StoragePolicies
 application/        CQRS use cases, still zero-Spring
   commands/         SaveContentCommand
   queries/          GetContentLoadedQuery
@@ -88,6 +88,12 @@ object storage, and only `storage.auth-mode` (`hmac` vs `iam`) differs.
   (`ObjectKey.ofContextUrl`), so `PartnerIdRequiredError` can no longer be raised there.
 - Path traversal guard on `context_url` was added despite not being in the HU: the value comes
   from the client, so an unvalidated `../otherPartner/x.pdf` would escape the partner space.
+- The stored `Content-Type` comes from the `fileName` extension (`ContentTypes.resolve`),
+  not from what the client declares — a `.svg` announced as `image/png` is still stored as
+  `image/svg+xml`. The same `fileName` builds the object key, so metadata and key agree by
+  construction and the GET can't serve an SVG labelled as PNG. The declared value is only a
+  fallback for extensions the map doesn't know. No magic-byte sniffing: a PDF renamed to
+  `.png` is stored as `image/png`.
 - The GET drops the three headers the HU declares mandatory (`correlation_id`, `request_id`,
   `_p`) and no longer echoes them. Two consequences worth knowing: the GET no longer isolates
   one partner from another (anyone who knows another partner id can read its files — the 401

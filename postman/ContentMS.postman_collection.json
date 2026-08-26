@@ -73,8 +73,7 @@
                   "key": "file",
                   "type": "file",
                   "src": null,
-                  "contentType": "image/png",
-                  "description": "Selecciona postman/image1.png. El contentType va declarado aqui: si no, Postman manda application/octet-stream y el bucket lo rechaza con 422."
+                  "description": "Selecciona postman/image1.png u otro archivo admitido. No hace falta declarar el Content-Type: el servicio lo deduce de la extension de fileName."
                 }
               ]
             },
@@ -295,7 +294,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "jsonString", "value": "esto no es json", "type": "text" },
-                { "key": "file", "type": "file", "src": null, "contentType": "image/png" }
+                { "key": "file", "type": "file", "src": null }
               ]
             },
             "url": {
@@ -342,7 +341,7 @@
                   "type": "file",
                   "src": null,
                   "contentType": "text/plain",
-                  "description": "Selecciona postman/nota.txt: el MIME text/plain no lo admite el bucket, que es lo que esta peticion demuestra."
+                  "description": "Selecciona postman/nota.txt. La extension .txt no esta en el mapa del servicio, asi que manda el text/plain declarado aqui, que el bucket no admite: 422."
                 }
               ]
             },

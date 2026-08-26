@@ -9,6 +9,7 @@ import com.bnpparibas.cardif.cloud.contentms.application.interfaces.ReturningCom
 import com.bnpparibas.cardif.cloud.contentms.domain.errors.FileTooLargeError;
 import com.bnpparibas.cardif.cloud.contentms.domain.errors.UnsupportedContentTypeError;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.BucketPolicy;
+import com.bnpparibas.cardif.cloud.contentms.domain.storage.ContentTypes;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.FileStorage;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.StoragePolicies;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.ObjectKey;
@@ -43,13 +44,16 @@ public class SaveContentCommandHandler
                     + " bytes supera el maximo de " + policy.maxSizeMb() + " MB del bucket "
                     + StoragePolicies.CMS_CONTENT);
         }
-        if (!policy.allowsContentType(file.contentType())) {
-            throw new UnsupportedContentTypeError("El tipo de contenido " + file.contentType()
+        // El MIME sale de la extension de fileName, no de lo que declare el cliente: es
+        // ese mismo fileName el que compone la clave, asi que metadato y clave concuerdan.
+        String contentType = ContentTypes.resolve(command.fileName(), file.contentType());
+        if (!policy.allowsContentType(contentType)) {
+            throw new UnsupportedContentTypeError("El tipo de contenido " + contentType
                     + " no esta admitido por el bucket " + StoragePolicies.CMS_CONTENT);
         }
 
         String key = ObjectKey.of(command.partnerId(), command.fileName());
-        fileStorage.upload(StoragePolicies.CMS_CONTENT, key, file.content(), file.contentType());
+        fileStorage.upload(StoragePolicies.CMS_CONTENT, key, file.content(), contentType);
 
         return SaveContentResponseDto.created();
     }

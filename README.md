@@ -137,8 +137,9 @@ curl -i -X POST http://localhost:8080/v1/save-content \
   -H "request_id: 22222222-2222-2222-2222-222222222222" \
   -H "_p: 12345" \
   -F 'jsonString={"fileName":"image1.png","partnerId":"12345"}' \
-  -F 'file=@postman/image1.png;type=image/png'
+  -F 'file=@postman/image1.png'
 # -> 201  {"returnCode":"201","message":"Created"}
+# No hace falta declarar el tipo del archivo: sale de la extension de fileName.
 
 # Descargar: sin ninguna cabecera, y con el socio dentro del context_url
 curl -i "http://localhost:8080/v1/content-loaded?context_url=12345/image1.png" \
@@ -248,7 +249,7 @@ java -jar target/content-ms-1.0.0.jar --spring.profiles.active=develop
 src/main/java/com/bnpparibas/cardif/cloud/contentms/
 ├── domain/            Java puro, cero Spring
 │   ├── errors/        DomainException + errores tipados
-│   └── storage/       FileStorage (puerto), ObjectKey, políticas
+│   └── storage/       FileStorage (puerto), ObjectKey, ContentTypes, políticas
 ├── application/       Casos de uso (CQRS), cero Spring
 │   ├── commands/      SaveContentCommand
 │   ├── queries/       GetContentLoadedQuery
@@ -285,7 +286,14 @@ quien la escribió:
    POST se resuelve JSON → header `_p` → 400.
 3. **Se añadió una guarda de path traversal** que la HU no pide. El `context_url` viene del
    cliente: sin validarlo, un `../otroSocio/x.pdf` se saldría del espacio de socios.
-4. **El GET va sin cabeceras.** La HU declara `correlation_id`, `request_id` y `_p`
+4. **El Content-Type se deduce de la extensión de `fileName`**, no de lo que declare el
+   cliente: `image2.svg` se guarda como `image/svg+xml` aunque venga anunciado como
+   `image/png`. El motivo es que el archivo se sirve por su clave, y esa clave la compone el
+   mismo `fileName`; si el metadato no concordara, el GET devolvería un SVG etiquetado como
+   PNG y el navegador no lo pintaría. Lo declarado sólo se usa como respaldo cuando la
+   extensión es desconocida. No se miran los bytes del archivo: un PDF renombrado a `.png` se
+   guardaría como `image/png`.
+5. **El GET va sin cabeceras.** La HU declara `correlation_id`, `request_id` y `_p`
    obligatorios también en el GET, y pide devolverlos en la respuesta. Aquí se suprimen a
    propósito: el GET es una descarga con una sola entrada, `context_url`, que ya lleva el
    socio delante (`12345/image1.png`). Consecuencia a validar con quien escribió la HU: al
