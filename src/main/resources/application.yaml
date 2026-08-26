@@ -1,0 +1,33 @@
+# Configuracion comun a todos los perfiles. Lo que varia por entorno vive en
+# parameters/<perfil>/, y cada application-<perfil>.yaml solo hace el import.
+server:
+  port: ${SERVER_PORT:8080}
+  # Apagado ordenado: al recibir SIGTERM deja de aceptar conexiones nuevas y espera
+  # a que terminen las en curso. Code Engine manda SIGTERM al reescalar.
+  shutdown: graceful
+
+spring:
+  application:
+    name: content-ms
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
+  threads:
+    virtual:
+      enabled: true
+  profiles:
+    active: ${PROFILE:local}
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: always
+  servlet:
+    multipart:
+      # Tope duro del contenedor. La politica por bucket
+      # (storage.buckets.<n>.max-size-mb) es la que da el error tipado; esto es la
+      # red de seguridad para que un cuerpo enorme no llegue siquiera a memoria.
+      max-file-size: ${MULTIPART_MAX_FILE_SIZE:10MB}
+      max-request-size: ${MULTIPART_MAX_REQUEST_SIZE:12MB}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

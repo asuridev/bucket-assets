@@ -1,0 +1,7 @@
+# Perfil develop: importa sus fragmentos de parameters/develop/.
+spring:
+  config:
+    import:
+      - "classpath:parameters/develop/logging.yaml"
+      - "classpath:parameters/develop/management.yaml"
+      - "classpath:parameters/develop/storage.yaml"

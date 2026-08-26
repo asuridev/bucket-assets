@@ -1,0 +1,18 @@
+# COS real de desarrollo. Las credenciales llegan por variable de entorno; las
+# obligatorias no llevan default, para que la app se niegue a arrancar sin ellas en
+# vez de fallar en la primera peticion.
+storage:
+  endpoint: ${COS_ENDPOINT}
+  location: ${COS_LOCATION:us-south}
+  api-key: ${COS_API_KEY}
+  service-instance-id: ${COS_SERVICE_INSTANCE_ID}
+  request-timeout-ms: ${COS_REQUEST_TIMEOUT_MS:15000}
+  buckets:
+    cmsContent:
+      bucket: ${COS_BUCKET_CMS_CONTENT}
+      visibility: private
+      max-size-mb: ${COS_MAX_SIZE_MB:10}
+      allowed-content-types: ${COS_ALLOWED_CONTENT_TYPES:image/png,image/jpeg,image/gif,image/svg+xml,application/pdf}
+
+api:
+  expose-error-stack: ${API_EXPOSE_ERROR_STACK:true}

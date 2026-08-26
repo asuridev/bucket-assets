@@ -1,0 +1,7 @@
+# Perfil local: importa sus fragmentos de parameters/local/.
+spring:
+  config:
+    import:
+      - "classpath:parameters/local/logging.yaml"
+      - "classpath:parameters/local/management.yaml"
+      - "classpath:parameters/local/storage.yaml"

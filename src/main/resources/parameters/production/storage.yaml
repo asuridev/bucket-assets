@@ -1,0 +1,18 @@
+# COS de produccion. Todo por entorno y sin defaults en lo obligatorio.
+storage:
+  endpoint: ${COS_ENDPOINT}
+  location: ${COS_LOCATION}
+  api-key: ${COS_API_KEY}
+  service-instance-id: ${COS_SERVICE_INSTANCE_ID}
+  request-timeout-ms: ${COS_REQUEST_TIMEOUT_MS:15000}
+  buckets:
+    cmsContent:
+      bucket: ${COS_BUCKET_CMS_CONTENT}
+      visibility: private
+      max-size-mb: ${COS_MAX_SIZE_MB:10}
+      allowed-content-types: ${COS_ALLOWED_CONTENT_TYPES:image/png,image/jpeg,image/gif,image/svg+xml,application/pdf}
+
+api:
+  # Nunca true en produccion: el stack en el cuerpo de error filtra rutas, versiones
+  # y estructura interna a cualquiera que provoque un fallo.
+  expose-error-stack: false

@@ -1,0 +1,7 @@
+# Perfil production: importa sus fragmentos de parameters/production/.
+spring:
+  config:
+    import:
+      - "classpath:parameters/production/logging.yaml"
+      - "classpath:parameters/production/management.yaml"
+      - "classpath:parameters/production/storage.yaml"

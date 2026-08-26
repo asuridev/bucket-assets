@@ -1,0 +1,6 @@
+logging:
+  level:
+    root: INFO
+    com.bnpparibas.cardif.cloud.contentms: DEBUG
+  pattern:
+    correlation: "[%X{correlationId:-} %X{requestId:-}] "

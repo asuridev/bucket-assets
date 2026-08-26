@@ -1,0 +1,389 @@
+{
+  "info": {
+    "_postman_id": "b7e1c2d4-5a6f-4c3b-9d81-2f0a4e6c8b11",
+    "name": "ContentMS (HU-211)",
+    "description": "Carga y consulta de archivos de contenido estatico en el COS de CMS.\n\n## Antes de empezar\n\n1. Levanta MinIO: `podman-compose -f deploy/docker-compose.yaml up -d`\n2. Arranca el servicio: `PROFILE=minio java -jar target/content-ms-1.0.0.jar`\n   (o `PROFILE=local` para el almacen en memoria, sin contenedores)\n3. En **POST /v1/save-content**, pestana Body, selecciona un archivo en el campo `file`.\n   Tienes uno de ejemplo en `postman/image1.png`. Postman no puede guardar la ruta en la\n   coleccion, asi que este es el unico paso manual.\n\nLos headers `correlation_id` y `request_id` se generan solos con `{{$guid}}` en cada envio.\n\n## Variables\n\n| Variable | Para que |\n|---|---|\n| `baseUrl` | Donde escucha el servicio |\n| `partnerId` | El socio; determina el prefijo `partnerId/` en el bucket |\n| `fileName` | Nombre con el que se guarda y se recupera |\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "partnerId",
+      "value": "12345",
+      "type": "string"
+    },
+    {
+      "key": "fileName",
+      "value": "image1.png",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Flujo principal",
+      "description": "El ciclo que describe la HU: guardar y recuperar.",
+      "item": [
+        {
+          "name": "POST /v1/save-content",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "",
+                  "pm.test('el cuerpo es el responseHeader del HU', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.returnCode).to.eql('201');",
+                  "    pm.expect(body.message).to.eql('Created');",
+                  "});",
+                  "",
+                  "pm.test('devuelve en eco los tres headers del contrato', () => {",
+                  "    pm.expect(pm.response.headers.get('correlation_id')).to.be.a('string');",
+                  "    pm.expect(pm.response.headers.get('request_id')).to.be.a('string');",
+                  "    pm.expect(pm.response.headers.get('_p')).to.eql(pm.collectionVariables.get('partnerId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "correlation_id", "value": "{{$guid}}" },
+              { "key": "request_id", "value": "{{$guid}}" },
+              { "key": "_p", "value": "{{partnerId}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "jsonString",
+                  "value": "{\"fileName\":\"{{fileName}}\",\"partnerId\":\"{{partnerId}}\"}",
+                  "contentType": "application/json",
+                  "type": "text",
+                  "description": "Campos del HU: fileName (obligatorio) y partnerId (opcional)."
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": null,
+                  "contentType": "image/png",
+                  "description": "Selecciona postman/image1.png. El contentType va declarado aqui: si no, Postman manda application/octet-stream y el bucket lo rechaza con 422."
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/save-content",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "save-content"]
+            },
+            "description": "Guarda el archivo en el COS de CMS bajo `/partnerId/Object`.\n\nEl `partnerId` sale del JSON; si no viene, se usa el header `_p`."
+          }
+        },
+        {
+          "name": "GET /v1/content-loaded",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('devuelve el binario, no un JSON', () => {",
+                  "    pm.expect(pm.response.responseSize).to.be.above(0);",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.not.include('application/json');",
+                  "});",
+                  "",
+                  "pm.test('el responseHeader del HU viaja como headers', () => {",
+                  "    pm.expect(pm.response.headers.get('returnCode')).to.eql('200');",
+                  "    pm.expect(pm.response.headers.get('message')).to.eql('OK');",
+                  "});",
+                  "",
+                  "pm.test('Content-Disposition trae el nombre del archivo', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Disposition'))",
+                  "      .to.include(pm.collectionVariables.get('fileName'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{partnerId}}%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{partnerId}}%2F{{fileName}}" }]
+            },
+            "description": "Devuelve el archivo como binario. Va sin cabeceras: el `context_url` (`<partnerId>/<archivo>`) es su unica entrada, y la respuesta tampoco devuelve `correlation_id`, `request_id` ni `_p`.\n\nUsa **Save Response > Save to a file** para comprobar que es identico al que subiste."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Errores",
+      "description": "Cada uno devuelve el cuerpo `errorHeader` / `errorDetail` que define la HU.",
+      "item": [
+        {
+          "name": "400 - context_url sin prefijo de socio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('forma de error del HU', () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.errorHeader.returnCode).to.eql(400);",
+                  "    pm.expect(b.errorDetail.code).to.eql('INVALID_OBJECT_PATH');",
+                  "    pm.expect(b.errorDetail).to.have.property('errorStack');",
+                  "    pm.expect(b.errorDetail.errorDate).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{fileName}}" }]
+            },
+            "description": "El `context_url` debe ser `<partnerId>/<archivo>`. Sin el prefijo del socio no hay clave que componer, asi que se rechaza en vez de buscar en la raiz del bucket."
+          }
+        },
+        {
+          "name": "400 - falta el parametro context_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('codigo MISSING_REQUIRED_PARAMETER', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('MISSING_REQUIRED_PARAMETER'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"]
+            }
+          }
+        },
+        {
+          "name": "400 - path traversal a otro socio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('la guarda de rutas lo corta', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('INVALID_OBJECT_PATH'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url=..%2F99999%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "..%2F99999%2F{{fileName}}" }]
+            },
+            "description": "El `..` va URL-encoded para que ningun cliente lo normalice por el camino.\n\nSin esta guarda, el prefijo `partnerId/` no aislaria nada: cualquiera podria leer los archivos de otro socio del mismo bucket."
+          }
+        },
+        {
+          "name": "404 - el archivo no existe",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('codigo CONTENT_NOT_FOUND', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('CONTENT_NOT_FOUND'));",
+                  "pm.test('sin stack: un 404 es normal, no un fallo', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.errorStack).to.be.null);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{partnerId}}%2Fno-existe.png",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{partnerId}}%2Fno-existe.png" }]
+            }
+          }
+        },
+        {
+          "name": "404 - archivo de otro socio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404: bajo el prefijo 99999 no hay nada', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url=99999%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "99999%2F{{fileName}}" }]
+            },
+            "description": "El mismo archivo, pero pedido bajo el prefijo del socio 99999: da 404 porque esa clave no existe.\n\nOjo, esto ya NO prueba aislamiento entre socios: al viajar el partnerId dentro del `context_url`, quien conozca el id de otro socio puede leer sus archivos. El aislamiento tendria que venir de una capa de autorizacion, que aun no existe."
+          }
+        },
+        {
+          "name": "400 - jsonString malformado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('codigo INVALID_JSON_STRING', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('INVALID_JSON_STRING'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "correlation_id", "value": "{{$guid}}" },
+              { "key": "request_id", "value": "{{$guid}}" },
+              { "key": "_p", "value": "{{partnerId}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "jsonString", "value": "esto no es json", "type": "text" },
+                { "key": "file", "type": "file", "src": null, "contentType": "image/png" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/save-content",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "save-content"]
+            },
+            "description": "Recuerda seleccionar un archivo en `file`, o el fallo sera otro (falta la parte del multipart)."
+          }
+        },
+        {
+          "name": "422 - tipo de contenido no admitido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('codigo UNSUPPORTED_CONTENT_TYPE', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('UNSUPPORTED_CONTENT_TYPE'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "correlation_id", "value": "{{$guid}}" },
+              { "key": "request_id", "value": "{{$guid}}" },
+              { "key": "_p", "value": "{{partnerId}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "jsonString",
+                  "value": "{\"fileName\":\"nota.txt\",\"partnerId\":\"{{partnerId}}\"}",
+                  "contentType": "application/json",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": null,
+                  "contentType": "text/plain",
+                  "description": "Selecciona postman/nota.txt: el MIME text/plain no lo admite el bucket, que es lo que esta peticion demuestra."
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/save-content",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "save-content"]
+            },
+            "description": "El bucket solo admite imagenes y PDF. La regla vive en `storage.buckets.cmsContent.allowed-content-types`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Salud",
+      "item": [
+        {
+          "name": "GET /actuator/health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "health"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

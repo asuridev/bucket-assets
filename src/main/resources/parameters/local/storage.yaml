@@ -1,0 +1,27 @@
+# En local se corre el mismo adaptador que en produccion (CosFileStorage) y el mismo
+# SDK: lo unico que cambia es contra quien. Aqui el destino es el MinIO que levanta
+# deploy/docker-compose.yaml, firmando HMAC en vez de IAM, asi que no hacen falta
+# credenciales de IBM Cloud pero si se ejercita la ruta de codigo real.
+storage:
+  auth-mode: hmac
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  location: ${MINIO_REGION:us-east-1}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  request-timeout-ms: 15000
+  buckets:
+    cmsContent:
+      # El mismo que crea el contenedor minio-init del compose.
+      bucket: ${MINIO_BUCKET_CMS_CONTENT:cms-content}
+      visibility: private
+      max-size-mb: 10
+      allowed-content-types:
+        - image/png
+        - image/jpeg
+        - image/gif
+        - image/svg+xml
+        - application/pdf
+
+api:
+  # Solo en local: el stack en la respuesta ayuda a depurar y aqui no hay nada que filtrar.
+  expose-error-stack: true

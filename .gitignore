@@ -1,0 +1,11 @@
+target/
+
+# Wrapper de Maven: se ignora a peticion del equipo. Ojo, quien clone el repo
+# necesitara un Maven instalado, porque ./mvnw ya no viaja con el.
+mvnw
+mvnw.cmd
+.mvn/
+.idea/
+*.iml
+.vscode/
+*.log

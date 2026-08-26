@@ -1,0 +1,1 @@
+Este archivo existe para provocar un 422: el bucket no admite text/plain.
