@@ -1,0 +1,46 @@
+# Shim entre "el navegador vive bajo /user/<usuario>/http/8082/" y "mongo-express cree estar
+# en la raiz". La imagen oficial de nginx pasa envsubst sobre este fichero al arrancar y deja
+# el resultado en /etc/nginx/conf.d/default.conf.
+#
+# Con MONGO_UI_BASE_PATH vacio todas las sustituciones son identidades: el mismo fichero vale
+# en local (raiz) y en DevX (subpath).
+server {
+    listen 8082;
+    server_name _;
+
+    # Los ficheros de GridFS y los import de coleccion pueden ser grandes.
+    client_max_body_size 64m;
+
+    # Location siempre relativo. Por defecto nginx lo reconstruye como
+    # http://<host>/... y en DevX, que sirve por https, eso degrada el esquema.
+    absolute_redirect off;
+
+    location / {
+        proxy_pass http://mongo-express:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Imprescindible: sin esto la respuesta llega comprimida y sub_filter no puede tocarla.
+        proxy_set_header Accept-Encoding "";
+
+        # 1. El <base href> que emite mongo-express, para todo lo que sea relativo.
+        sub_filter '<base href="/">' '<base href="${MONGO_UI_BASE_PATH}/">';
+        # 2. Sus assets son ABSOLUTOS (/public/css/style.css) y <base> no afecta a URLs
+        #    absolutas, asi que hay que reescribir atributo por atributo. Los enlaces externos
+        #    (href="https://cdnjs...") no casan, porque el patron exige la barra tras la comilla.
+        sub_filter 'href="/'   'href="${MONGO_UI_BASE_PATH}/';
+        sub_filter 'src="/'    'src="${MONGO_UI_BASE_PATH}/';
+        sub_filter 'action="/' 'action="${MONGO_UI_BASE_PATH}/';
+        sub_filter_once off;
+        sub_filter_types text/html;
+
+        # Los 302 de mongo-express salen sin prefijo, y a veces absolutos
+        # (http://<host>/db/foo). La regla con regex los deja SIEMPRE relativos y con
+        # prefijo: absolutos con esquema http reventarian en DevX, que sirve por https.
+        proxy_redirect ~^https?://[^/]+/(.*)$ ${MONGO_UI_BASE_PATH}/$1;
+        proxy_redirect / ${MONGO_UI_BASE_PATH}/;
+    }
+}

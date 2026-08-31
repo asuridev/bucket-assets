@@ -129,7 +129,8 @@ https://devx-cardif04.staging.echonet/user/<usuario>/http/8081/    # Redis Comma
 ```
 
 Ahí no hay `podman exec` ni puerto 6379, así que **Redis Commander es la única forma de ver
-la caché**.
+la caché**. Si tienes que exponer otro cliente web en este entorno (pgAdmin, mongo-express…),
+las reglas generales están en [`DEVX-CLIENTES-WEB.md`](DEVX-CLIENTES-WEB.md).
 
 **1. Prepara el entorno.** Copia [`deploy/.env.devx.example`](deploy/.env.devx.example) a
 `deploy/.env.devx` (ignorado por git) y edítalo: sustituye `<usuario>` por el tuyo (`j31399`)
@@ -138,31 +139,39 @@ consola con acceso total a la caché.
 
 ```bash
 cp deploy/.env.devx.example deploy/.env.devx
-podman-compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d
+docker compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d
 ```
+
+En DevX el binario es `docker compose`, no `podman-compose`.
 
 **2. Publica el puerto.** En el panel **PORTS** haz *Add Port* del **8081**; si no, no tiene
 forwarded address.
 
-**3. Averigua si el proxy reenvía el prefijo**, antes de fiarte de nada. Abre la consola de
-MinIO por su URL de DevX (`…/http/9001/`) y mira en DevTools → Network a qué ruta pide los
-assets:
+**3. Deja `REDIS_UI_BASE_PATH` vacío.** DevX **recorta el prefijo** antes de reenviar: al
+contenedor le llega `/`, así que la UI tiene que servir en la raíz. Comprobado en
+`devx-cardif04`; con el prefijo puesto la UI responde `Unauthorized - Missing Token`, porque
+solo escucha bajo esa ruta y ahí nunca le llega. La variable se mantiene en el compose por si
+otro entorno sí lo reenvía, pero aquí va **sin valor**: `REDIS_UI_BASE_PATH=`, ni siquiera `/`.
 
-| Los assets van a… | Significa | `REDIS_UI_BASE_PATH` |
-|---|---|---|
-| `/user/<usuario>/http/9001/static/…` | el prefijo llega al contenedor | `/user/<usuario>/http/8081` |
-| `/static/…` (404 contra la raíz del host) | DevX lo recorta | vacío |
+Que esto funcione depende del cliente, no del proxy: redis-commander pide todos sus assets con
+rutas **relativas** (`bootstrap/css/bootstrap.css`, no `/bootstrap/…`), así que el navegador
+las resuelve contra `…/http/8081/` y aciertan aunque el contenedor se crea en la raíz. Un
+cliente con rutas absolutas se vería roto aquí — es el criterio para elegir el siguiente.
 
 **4. Aplica el valor** y recrea solo ese contenedor:
 
 ```bash
-podman-compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d redis-ui
+docker compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d --force-recreate redis-ui
 ```
 
-**5. Abre la UI** en `https://devx-cardif04.staging.echonet/user/<usuario>/http/8081/`. Con
-prefijo puesto, Redis Commander responde **solo** bajo esa ruta y la raíz da `401`; sin
-prefijo, responde en la raíz. Si te encuentras un `401` o una página en blanco donde
-esperabas el login, el valor está al revés: cámbialo y repite el paso 4.
+**5. Abre la UI** en `https://devx-cardif04.staging.echonet/user/<usuario>/http/8081/`.
+Redis Commander responde **solo** bajo la ruta que tenga en `URL_PREFIX`, así que los dos
+fallos típicos son:
+
+| Lo que ves | Qué pasa |
+|---|---|
+| `Unauthorized - Missing Token` | `REDIS_UI_BASE_PATH` tiene valor: la UI solo escucha bajo ese prefijo y DevX se lo recorta. Vacíala y recrea el contenedor. Verifica con `docker exec contentms-redis-ui env \| grep URL_PREFIX`, que debe salir vacío |
+| `502 Bad Gateway` | El proxy no alcanza el puerto: normalmente DevX perdió el forwarding del 8081 al recrear el contenedor. Quita y vuelve a añadir el puerto en el panel PORTS |
 
 **6. Comprueba la caché** igual que en local (§8), pero pidiendo el GET contra
 `https://devx-cardif04.staging.echonet/user/<usuario>/http/8080/v1/content-loaded?context_url=…`

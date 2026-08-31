@@ -1,0 +1,89 @@
+# MongoDB local con UI web (mongo-express), independiente del stack de deploy/: red propia,
+# volumen propio y ningun servicio compartido.
+#
+#   podman-compose -f deploy-mongo/docker-compose.yaml up -d      # levantar
+#   podman-compose -f deploy-mongo/docker-compose.yaml down       # parar
+#   podman-compose -f deploy-mongo/docker-compose.yaml down -v    # parar y BORRAR los datos
+#
+# En DevX, donde solo se puede exponer HTTP y ademas por subpath:
+#
+#   docker compose -f deploy-mongo/docker-compose.yaml --env-file deploy-mongo/.env.devx up -d
+#
+# Plantilla en deploy-mongo/.env.devx.example, detalles en deploy-mongo/README.md.
+#
+# En Windows usa podman-compose (el de Python), NO `podman compose`: ver README raiz, seccion 4.
+services:
+
+  # Imagen de Bitnami. OJO con el tag: desde agosto de 2025 Bitnami solo publica `latest` en
+  # bitnami/mongodb; las versiones fijas se movieron a bitnamilegacy/mongodb y estan congeladas
+  # (la ultima es 8.0.13, sin parches desde entonces). Es la unica excepcion a la regla de "tag
+  # fijo" del resto del repo. Si necesitas reproducibilidad, fija el digest:
+  #   podman image inspect bitnami/mongodb:latest --format '{{index .RepoDigests 0}}'
+  # y usa ese `bitnami/mongodb@sha256:...` aqui.
+  #
+  # Variables y rutas son las de Bitnami, NO las de la imagen oficial: MONGODB_ROOT_USER en vez
+  # de MONGO_INITDB_ROOT_USERNAME, y los datos en /bitnami/mongodb en vez de /data/db. Corre
+  # como uid 1001 (grupo root), y /bitnami/mongodb viene con permisos de grupo, asi que el
+  # volumen nombrado hereda propiedad valida al crearse.
+  mongo:
+    image: bitnami/mongodb:latest
+    container_name: contentms-mongo
+    environment:
+      MONGODB_ROOT_USER: ${MONGO_ROOT_USER:-mongoadmin}
+      MONGODB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-mongoadmin}
+    ports:
+      # Literal, sin ${VAR:-default}: hay implementaciones de compose (la de DevX) que no
+      # sustituyen dentro de `ports` y parten el string por ":", con lo que intentan leer
+      # "-27017}" como numero de puerto y revientan al arrancar.
+      - "27017:27017"
+    volumes:
+      # Con volumen, al reves que el Redis de deploy/: esto es una base de datos, no una cache,
+      # y perder los datos en cada `down` seria un incordio. `down -v` si los borra.
+      - mongo-data:/bitnami/mongodb
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # La UI. No publica puerto: solo la alcanza nginx por la red interna, asi hay una unica
+  # puerta de entrada y no choca con el 8081 que ya usa Redis Commander en deploy/.
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    container_name: contentms-mongo-express
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # Por NOMBRE DE SERVICIO, no localhost: la UI habla con Mongo por la red del compose.
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:-mongoadmin}:${MONGO_ROOT_PASSWORD:-mongoadmin}@mongo:27017/?authSource=admin
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      # Auth propia obligatoria: en DevX esta UI queda detras de una URL alcanzable.
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_UI_USER:-admin}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_UI_PASSWORD:-admin}
+      ME_CONFIG_SITE_COOKIESECRET: ${MONGO_UI_COOKIE_SECRET:-cookiesecret}
+      ME_CONFIG_SITE_SESSIONSECRET: ${MONGO_UI_SESSION_SECRET:-sessionsecret}
+
+  # El unico motivo de que este nginx exista: mongo-express pide sus assets con rutas
+  # ABSOLUTAS (/public/...) y DevX sirve la UI bajo /user/<usuario>/http/8082/ recortando ese
+  # prefijo antes de reenviar. Sin reescribir el HTML, el navegador pedira /public/... contra
+  # la raiz del host y la pagina saldra sin estilos. Ver deploy-mongo/nginx/default.conf.template.
+  # Con MONGO_UI_BASE_PATH vacio (local) las reescrituras son no-ops y sobra, pero se deja
+  # siempre para que el mismo fichero valga en los dos entornos.
+  mongo-ui-proxy:
+    image: nginx:1.31.4-alpine
+    container_name: contentms-mongo-ui-proxy
+    depends_on:
+      - mongo-express
+    environment:
+      MONGO_UI_BASE_PATH: ${MONGO_UI_BASE_PATH:-}
+      # Sin este filtro, envsubst tambien sustituiria $host, $scheme y demas variables de
+      # nginx, que no estan en el entorno, dejandolas vacias.
+      NGINX_ENVSUBST_FILTER: "MONGO_UI_"
+    volumes:
+      - ./nginx:/etc/nginx/templates:ro
+    ports:
+      - "8082:8082"
+
+volumes:
+  mongo-data:

@@ -12,3 +12,6 @@ mvnw.cmd
 
 # Entorno real de DevX: lleva credenciales de la UI de Redis. La plantilla si viaja.
 deploy/.env.devx
+
+# Entorno real de DevX del stack de Mongo: lleva credenciales.
+deploy-mongo/.env.devx
