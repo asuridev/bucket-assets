@@ -297,10 +297,13 @@ debe verse al arrancar, no en la primera petición.
 Estas solo las consume `deploy/docker-compose.yaml`. En local no hace falta exportar ninguna;
 en DevX van en `deploy/.env.devx` (plantilla en `deploy/.env.devx.example`).
 
+Los puertos publicados van **literales** en el compose, sin variable: hay implementaciones de
+compose (la de DevX) que no sustituyen dentro de `ports:` y parten el valor por `:`, con lo que
+`${REDIS_PORT:-6379}:6379` acaba en `ValueError: invalid literal for int(): '-6379}'`.
+
 | Variable | Default | Para qué |
 |---|---|---|
 | `MINIO_PUBLIC_URL` | `http://localhost:9001` | `MINIO_BROWSER_REDIRECT_URL` de la consola. Sin barra final; no puede ir vacía, MinIO la valida como URL |
-| `REDIS_UI_PORT` | `8081` | Puerto publicado de Redis Commander |
 | `REDIS_UI_BASE_PATH` | vacío | `URL_PREFIX` de la UI. Solo si el proxy reenvía el prefijo (ver §4) |
 | `REDIS_UI_USER` | `admin` | Basic auth de la UI |
 | `REDIS_UI_PASSWORD` | `admin` | Basic auth de la UI. **Cámbiala en DevX** |
