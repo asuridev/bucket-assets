@@ -28,6 +28,15 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
  * negocio tipadas llevan el estado que declara su {@code DomainException}. Los fallos
  * no previstos caen en el catch-all como 500 y se registran con stack completo — al
  * cliente nunca se le manda el stack salvo que el perfil lo habilite.
+ *
+ * <p>Es tambien el UNICO punto que registra excepciones: por aqui pasa todo — los errores
+ * de negocio, los que Spring lanza antes de entrar al controlador y los inesperados — y es
+ * el unico sitio que conoce ya el estado HTTP final, que es lo que fija la gravedad.
+ *
+ * <p>De ahi el reparto de niveles: un 4xx es una respuesta prevista del contrato, no un
+ * incidente, y va en INFO <b>sin stack</b>. Un stack de sesenta lineas por cada archivo que
+ * no existe entierra los fallos de verdad y dispara las alertas que cuentan WARN. El stack
+ * se reserva para lo que si hay que investigar: 5xx y catch-all.
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -60,8 +69,8 @@ public class ApiExceptionHandler {
         String details = exception.getBindingResult().getFieldErrors().stream()
                 .map(error -> error.getField() + " " + error.getDefaultMessage())
                 .collect(Collectors.joining("; "));
-        return build(HttpStatus.BAD_REQUEST, CODE_VALIDATION_ERROR,
-                "La peticion no supera las validaciones: " + details, null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_VALIDATION_ERROR,
+                "La peticion no supera las validaciones: " + details);
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
@@ -69,8 +78,8 @@ public class ApiExceptionHandler {
         String details = exception.getConstraintViolations().stream()
                 .map(violation -> violation.getPropertyPath() + " " + violation.getMessage())
                 .collect(Collectors.joining("; "));
-        return build(HttpStatus.BAD_REQUEST, CODE_VALIDATION_ERROR,
-                "La peticion viola restricciones declaradas: " + details, null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_VALIDATION_ERROR,
+                "La peticion viola restricciones declaradas: " + details);
     }
 
     /**
@@ -82,31 +91,31 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(MissingRequestHeaderException.class)
     public ResponseEntity<ErrorResponse> onMissingHeader(MissingRequestHeaderException exception) {
-        return build(HttpStatus.BAD_REQUEST, CODE_MISSING_HEADER,
-                "Falta el header obligatorio '" + exception.getHeaderName() + "'", null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MISSING_HEADER,
+                "Falta el header obligatorio '" + exception.getHeaderName() + "'");
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<ErrorResponse> onMissingParameter(MissingServletRequestParameterException exception) {
-        return build(HttpStatus.BAD_REQUEST, CODE_MISSING_PARAMETER,
-                "Falta el parametro '" + exception.getParameterName() + "' en la peticion", null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MISSING_PARAMETER,
+                "Falta el parametro '" + exception.getParameterName() + "' en la peticion");
     }
 
     @ExceptionHandler(MissingServletRequestPartException.class)
     public ResponseEntity<ErrorResponse> onMissingPart(MissingServletRequestPartException exception) {
-        return build(HttpStatus.BAD_REQUEST, CODE_MISSING_PART,
-                "Falta la parte '" + exception.getRequestPartName() + "' en la peticion multipart", null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MISSING_PART,
+                "Falta la parte '" + exception.getRequestPartName() + "' en la peticion multipart");
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
     public ResponseEntity<ErrorResponse> onMalformedRequest(Exception exception) {
-        return build(HttpStatus.BAD_REQUEST, CODE_MALFORMED_REQUEST, "Peticion malformada", null);
+        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MALFORMED_REQUEST, "Peticion malformada");
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ErrorResponse> onMethodNotAllowed(HttpRequestMethodNotSupportedException exception) {
-        return build(HttpStatus.METHOD_NOT_ALLOWED, CODE_METHOD_NOT_ALLOWED,
-                "Metodo HTTP no soportado", null);
+        return buildAndLog(HttpStatus.METHOD_NOT_ALLOWED, CODE_METHOD_NOT_ALLOWED,
+                "Metodo HTTP no soportado");
     }
 
     /**
@@ -116,8 +125,8 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ErrorResponse> onMaxUploadSizeExceeded(MaxUploadSizeExceededException exception) {
-        return build(HttpStatus.PAYLOAD_TOO_LARGE, CODE_FILE_TOO_LARGE,
-                "El archivo supera el tamano maximo permitido", null);
+        return buildAndLog(HttpStatus.PAYLOAD_TOO_LARGE, CODE_FILE_TOO_LARGE,
+                "El archivo supera el tamano maximo permitido");
     }
 
     // -- Errores de negocio tipados --------------------------------------------
@@ -131,7 +140,8 @@ public class ApiExceptionHandler {
         if (status.is5xxServerError()) {
             log.error("Fallo de dependencia: {}", exception.getMessage(), exception);
         } else {
-            log.warn("Error de negocio [{}]: {}", exception.getCode(), exception.getMessage());
+            // Sin la excepcion como ultimo argumento: es justamente lo que evita el stack.
+            log.info("Error de negocio [{}]: {}", exception.getCode(), exception.getMessage());
         }
 
         return build(status, exception.getCode(), exception.getMessage(), exception);
@@ -144,6 +154,18 @@ public class ApiExceptionHandler {
         log.error("Excepcion no controlada", exception);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, CODE_INTERNAL_ERROR,
                 "Ocurrio un error inesperado", exception);
+    }
+
+    /**
+     * Registra y compone los errores de FORMA de la peticion.
+     *
+     * <p>Van en INFO y sin stack por lo mismo que los 4xx de negocio: son un error de quien
+     * llama, no un fallo del servicio. Hasta ahora no dejaban ninguna linea, asi que un 400
+     * por un header que falta era invisible en el log.
+     */
+    private ResponseEntity<ErrorResponse> buildAndLog(HttpStatus status, String code, String message) {
+        log.info("Peticion rechazada [{}]: {}", code, message);
+        return build(status, code, message, null);
     }
 
     private ResponseEntity<ErrorResponse> build(HttpStatus status, String code, String message,

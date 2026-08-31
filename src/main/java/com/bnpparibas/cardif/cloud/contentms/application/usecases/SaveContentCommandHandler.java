@@ -1,7 +1,6 @@
 package com.bnpparibas.cardif.cloud.contentms.application.usecases;
 
 import com.bnpparibas.cardif.cloud.contentms.application.annotations.ApplicationComponent;
-import com.bnpparibas.cardif.cloud.contentms.application.annotations.LogExceptions;
 import com.bnpparibas.cardif.cloud.contentms.application.commands.SaveContentCommand;
 import com.bnpparibas.cardif.cloud.contentms.application.dtos.FileUpload;
 import com.bnpparibas.cardif.cloud.contentms.application.dtos.SaveContentResponseDto;
@@ -34,7 +33,6 @@ public class SaveContentCommandHandler
     }
 
     @Override
-    @LogExceptions
     public SaveContentResponseDto handle(SaveContentCommand command) {
         FileUpload file = command.file();
         BucketPolicy policy = storagePolicies.forBucket(StoragePolicies.CMS_CONTENT);

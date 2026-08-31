@@ -285,7 +285,7 @@ src/main/java/com/bnpparibas/cardif/cloud/contentms/
     ├── rest/          Controller, ApiExceptionHandler, ErrorResponse
     ├── storage/       CosFileStorage (adaptador del puerto) +
     │                  CachedFileStorage (decorador de caché, @Primary)
-    ├── configurations/  usecase/, storage/, cache/, logging/
+    ├── configurations/  usecase/, storage/, cache/
     └── correlation/   CorrelationContext + filtro
 ```
 

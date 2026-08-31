@@ -1,7 +1,6 @@
 package com.bnpparibas.cardif.cloud.contentms.application.usecases;
 
 import com.bnpparibas.cardif.cloud.contentms.application.annotations.ApplicationComponent;
-import com.bnpparibas.cardif.cloud.contentms.application.annotations.LogExceptions;
 import com.bnpparibas.cardif.cloud.contentms.application.interfaces.QueryHandler;
 import com.bnpparibas.cardif.cloud.contentms.application.queries.GetContentLoadedQuery;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.FileStorage;
@@ -28,7 +27,6 @@ public class GetContentLoadedQueryHandler implements QueryHandler<GetContentLoad
     }
 
     @Override
-    @LogExceptions
     public StoredFile handle(GetContentLoadedQuery query) {
         String key = ObjectKey.ofContextUrl(query.contextUrl());
         return fileStorage.download(StoragePolicies.CMS_CONTENT, key);

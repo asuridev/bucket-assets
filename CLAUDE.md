@@ -57,7 +57,7 @@ infrastructure/    All Spring lives here
   storage/          CosFileStorage (the only adapter that talks to the provider) +
                     CachedFileStorage (@Primary Redis-caching decorator around it)
   configurations/   usecase/ (mediator wiring), storage/ (COS + policy config),
-                    cache/ (Redis cache manager + TTL properties), logging/
+                    cache/ (Redis cache manager + TTL properties)
   correlation/      CorrelationContext + CorrelationFilter
 ```
 
@@ -135,6 +135,15 @@ object storage, and only `storage.auth-mode` (`hmac` vs `iam`) differs.
   on the GET, so the GET does not isolate one partner from another (anyone who knows another
   partner id can read its files — the 401 that would restore this is still unwired). The POST
   is unchanged: three mandatory headers, values taken as-is with no format check.
+- `ApiExceptionHandler` is the **only** place that logs exceptions, and the level follows
+  the HTTP status it is about to return: 4xx goes out at `INFO` **without a stack** (a 404
+  for a file that was never uploaded is a contract response, not an incident — a sixty-line
+  stack per miss buries the real failures and trips WARN-count alerts), while 5xx and the
+  catch-all keep `ERROR` with the full stack. The request-shape handlers (missing header,
+  malformed body, 413) log too, at `INFO`: they used to log nothing at all.
+  A `@LogExceptions` aspect on the use-case handlers used to log the same exception a second
+  time, with a stack, at `WARN`. It is gone, along with `spring-boot-starter-aop`, which
+  nothing else needed — `@EnableCaching` proxies through `spring-context`, not aspectjweaver.
 - UUID validation lives in `infrastructure/correlation/CorrelationIds`, deliberately split in
   two: `CorrelationFilter` is best-effort tracing and silently drops a malformed id (a filter
   runs outside the `DispatcherServlet`, so anything it throws never reaches
