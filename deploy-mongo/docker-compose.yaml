@@ -41,19 +41,28 @@ services:
       # y perder los datos en cada `down` seria un incordio. `down -v` si los borra.
       - mongo-data:/bitnami/mongodb
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
+      # Ruta absoluta a mongosh: en el PATH esta, pero el PATH que ve el healthcheck depende
+      # de la variante de imagen, y si el binario no se encuentra el contenedor se queda
+      # "unhealthy" para siempre y nadie que dependa de el llega a arrancar.
+      test: ["CMD-SHELL", "/opt/bitnami/mongodb/bin/mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
       interval: 5s
-      timeout: 5s
+      timeout: 10s
       retries: 20
+      # El primer arranque de Bitnami crea el usuario root antes de abrir el puerto; sin esto
+      # esos fallos iniciales cuentan como intentos.
+      start_period: 40s
 
   # La UI. No publica puerto: solo la alcanza nginx por la red interna, asi hay una unica
   # puerta de entrada y no choca con el 8081 que ya usa Redis Commander en deploy/.
   mongo-express:
     image: mongo-express:1.0.2-20-alpine3.19
     container_name: contentms-mongo-express
+    # Solo orden de arranque, NO `condition: service_healthy`: mongo-express no necesita que
+    # Mongo este listo para levantar (arranca, escucha, y conecta cuando Mongo aparece;
+    # comprobado parandolo y volviendolo a arrancar). Con la condicion, cualquier problema del
+    # healthcheck deja la UI sin arrancar para siempre, que es lo que pasaba en DevX.
     depends_on:
-      mongo:
-        condition: service_healthy
+      - mongo
     environment:
       # Por NOMBRE DE SERVICIO, no localhost: la UI habla con Mongo por la red del compose.
       ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:-mongoadmin}:${MONGO_ROOT_PASSWORD:-mongoadmin}@mongo:27017/?authSource=admin
@@ -71,17 +80,34 @@ services:
   # Con MONGO_UI_BASE_PATH vacio (local) las reescrituras son no-ops y sobra, pero se deja
   # siempre para que el mismo fichero valga en los dos entornos.
   mongo-ui-proxy:
-    image: nginx:1.31.4-alpine
+    # Imagen de Bitnami, no la oficial de nginx: es la que esta mirrorada en el registro
+    # corporativo. Cambia todo el contrato:
+    #   - los server blocks van en /opt/bitnami/nginx/conf/server_blocks/*.conf, no en
+    #     /etc/nginx/conf.d/;
+    #   - NO existe el mecanismo /etc/nginx/templates + envsubst de la imagen oficial (montar
+    #     ahi el .template no da error: simplemente nadie lo lee, nginx arranca con su config
+    #     por defecto en el 8080 y el 8082 se queda sin escuchar -> 502);
+    #   - corre como uid 1001, por eso escucha en un puerto alto y no en el 80.
+    # Si trae ngx_http_sub_module (comprobado con `nginx -V`), que es lo unico que el shim
+    # necesita de verdad.
+    image: bitnami/nginx:latest
     container_name: contentms-mongo-ui-proxy
     depends_on:
       - mongo-express
     environment:
       MONGO_UI_BASE_PATH: ${MONGO_UI_BASE_PATH:-}
-      # Sin este filtro, envsubst tambien sustituiria $host, $scheme y demas variables de
-      # nginx, que no estan en el entorno, dejandolas vacias.
-      NGINX_ENVSUBST_FILTER: "MONGO_UI_"
     volumes:
-      - ./nginx:/etc/nginx/templates:ro
+      - ./nginx/default.conf.template:/tmp/default.conf.template:ro
+    # La sustitucion la hacemos a mano, que es lo que la imagen oficial hacia sola. El
+    # argumento de envsubst limita que variables se tocan: sin el se comeria $host, $scheme y
+    # el $1 del proxy_redirect. En YAML va con $$ para que compose no lo sustituya antes.
+    command:
+      - /bin/sh
+      - -c
+      - >
+        envsubst '$$MONGO_UI_BASE_PATH' < /tmp/default.conf.template
+        > /opt/bitnami/nginx/conf/server_blocks/mongo-ui.conf &&
+        exec /opt/bitnami/scripts/nginx/entrypoint.sh /opt/bitnami/scripts/nginx/run.sh
     ports:
       - "8082:8082"
 

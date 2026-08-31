@@ -159,6 +159,14 @@ El cliente se queda **sin `ports:`** y solo lo alcanza el nginx por la red inter
 puerta de entrada. Con la variable del prefijo vacía todas las reescrituras son no-ops, así
 que el mismo fichero sirve en local y en DevX.
 
+**Ojo con qué imagen de nginx usas.** La oficial y la de Bitnami no son intercambiables: los
+server blocks van en `/etc/nginx/conf.d/` frente a `/opt/bitnami/nginx/conf/server_blocks/`, y
+el mecanismo de plantillas con `envsubst` desde `/etc/nginx/templates` **solo existe en la
+oficial**. Montar ahí el fichero con la imagen de Bitnami no da error: nadie lo lee, nginx
+arranca con su config por defecto y lo ves desde fuera como un `502`. Con Bitnami hay que
+generar la config en el `command:` (`envsubst '$VAR' < plantilla > server_blocks/x.conf`) y
+escuchar en un puerto alto, porque corre como uid 1001. `sub_module` sí lo trae.
+
 ## 7. Checklist
 
 - [ ] Tag de imagen fijo, nunca `latest`.
