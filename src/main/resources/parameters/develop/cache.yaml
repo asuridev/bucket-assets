@@ -1,0 +1,11 @@
+# Cache de Redis de desarrollo. CACHE_ENABLED=false deja el servicio hablando solo con el
+# COS, sin tocar codigo, mientras no haya instancia de Redis provisionada.
+cache:
+  enabled: ${CACHE_ENABLED:true}
+  ttl-minutes: ${CACHE_TTL_MINUTES:60}
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}

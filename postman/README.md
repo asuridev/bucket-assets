@@ -2,7 +2,7 @@
 
 | Fichero | Qué es |
 |---|---|
-| `ContentMS.postman_collection.json` | La colección: flujo principal, errores y salud |
+| `ContentMS.postman_collection.json` | La colección: flujo principal, errores, salud y caché |
 | `ContentMS-local.postman_environment.json` | Entorno apuntando a `localhost:8080` |
 | `image1.png` | PNG 1x1 para el flujo principal |
 | `nota.txt` | Un `text/plain` para provocar el 422 |
@@ -10,7 +10,7 @@
 ## Puesta en marcha
 
 ```bash
-# 1. MinIO (crea el bucket solo)
+# 1. MinIO (crea el bucket solo) + Redis (la cache del GET)
 podman-compose -f deploy/docker-compose.yaml up -d
 
 # 2. El servicio
@@ -22,25 +22,25 @@ así que los archivos siguen ahí después de reiniciar.
 
 En Postman: **Import** los dos JSON y selecciona el entorno *ContentMS - local*.
 
-## El único paso manual
+## Los ficheros de los POST
 
-Postman no guarda rutas de fichero dentro de la colección, así que en las peticiones
-`POST` hay que **seleccionar el archivo a mano** en Body → form-data → campo `file`:
+Las peticiones con `file` ya traen la ruta guardada (`image1.png` / `nota.txt`), relativa a
+esta carpeta. En Postman, para que las encuentre: **Settings → General → Working directory**
+apuntando a `postman/` de este repo.
 
-- **POST /v1/save-content** y **400 - jsonString malformado** → `postman/image1.png`
-- **422 - tipo de contenido no admitido** → `postman/nota.txt`
+Si aun así responde `EISDIR: illegal operation on a directory, read`, es que el campo `file`
+se quedó sin fichero: vuelve a seleccionarlo en Body → form-data.
 
-Sin ese paso el POST devuelve un 400 por parte de multipart ausente, que no es el
-error que la petición pretende demostrar.
+## Desde la línea de comandos
 
-Si Postman responde `EISDIR: illegal operation on a directory, read`, es justo esto: el
-campo `file` no tiene fichero seleccionado y Postman acaba intentando leer un directorio.
-Seleccionalo y desaparece.
+```bash
+npx newman run postman/ContentMS.postman_collection.json \
+  -e postman/ContentMS-local.postman_environment.json \
+  --working-dir postman
+```
 
-Para ahorrarte el paso manual: en **Settings → General → Working directory** apunta a la
-carpeta `postman/` de este repo y marca *Allow reading files outside working directory*.
-Entonces basta con escribir `image1.png` en el campo `file` y queda guardado en la
-colección.
+`--working-dir` es lo que resuelve las rutas de los ficheros. La colección entera debe pasar
+en verde con MinIO y Redis arriba.
 
 No hace falta declarar el Content-Type del fichero: el servicio lo deduce de la extensión de
 `fileName`. La única petición que lo declara es la del 422, porque `.txt` no está entre las
@@ -48,8 +48,30 @@ extensiones conocidas y es justo el rechazo que demuestra.
 
 ## Orden de ejecución
 
-Las peticiones de **2. Errores** dependen de que el archivo exista, así que lanza antes
-**1. Flujo principal**. Con el Collection Runner, el orden de la colección ya es el correcto.
+Las peticiones de **2. Errores** y **4. Cache** dependen de que el archivo exista, así que
+lanza antes **1. Flujo principal**. Con el Collection Runner, el orden de la colección ya es
+el correcto.
+
+### La carpeta *4. Cache*
+
+Sus dos peticiones sólo comprueban que la segunda respuesta es idéntica a la primera. Que la
+segunda **no tocó el bucket** se demuestra apagando MinIO entre ambas: sin caché eso sería un
+`503 STORAGE_UNAVAILABLE`.
+
+```bash
+podman stop contentms-minio
+npx newman run postman/ContentMS.postman_collection.json \
+  -e postman/ContentMS-local.postman_environment.json \
+  --working-dir postman --folder "4. Cache"
+podman start contentms-minio
+```
+
+Y para ver la entrada en Redis:
+
+```bash
+podman exec contentms-redis redis-cli KEYS 'contentms:*'
+podman exec contentms-redis redis-cli TTL 'contentms:content::cmsContent/12345/image1.png'
+```
 
 `correlation_id` y `request_id` se generan en cada envío con `{{$guid}}`; no hay que tocarlos.
 Sólo van en las peticiones `POST`: el `GET /v1/content-loaded` no lleva ninguna cabecera.

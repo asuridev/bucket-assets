@@ -9,6 +9,7 @@ import com.bnpparibas.cardif.cloud.contentms.domain.errors.InvalidJsonStringErro
 import com.bnpparibas.cardif.cloud.contentms.domain.errors.PartnerIdRequiredError;
 import com.bnpparibas.cardif.cloud.contentms.domain.storage.StoredFile;
 import com.bnpparibas.cardif.cloud.contentms.infrastructure.configurations.usecase.UseCaseMediator;
+import com.bnpparibas.cardif.cloud.contentms.infrastructure.correlation.CorrelationIds;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
@@ -35,8 +36,13 @@ import org.springframework.web.multipart.MultipartFile;
  * <p>Los tres headers del contrato ({@code correlation_id}, {@code request_id},
  * {@code _p}) son obligatorios <b>solo en el POST</b>; alli el
  * {@code CorrelationFilter} los pone en el contexto de log y los devuelve en la
- * respuesta. El GET es una descarga desnuda: su unica entrada es {@code context_url},
- * que ya lleva el socio delante, y no devuelve ninguno de los tres.
+ * respuesta.
+ *
+ * <p>En el GET, {@code context_url} sigue siendo la unica entrada obligatoria — ya lleva
+ * el socio delante, y {@code _p} no existe alli. {@code correlation_id} y
+ * {@code request_id} se admiten como OPCIONALES: si no llegan, la descarga responde igual
+ * y la respuesta no los lleva; si llegan, tienen que ser un UUID canonico (400 si no) y se
+ * devuelven tal cual, ademas de trazar las lineas de log de la peticion.
  */
 @RestController
 @Validated
@@ -97,9 +103,21 @@ public class ContentV1Controller {
     @Operation(summary = "Devuelve el archivo migrado como binario, a partir de su context_url.")
     @GetMapping("/content-loaded")
     public ResponseEntity<byte[]> getContentLoaded(
+            @Parameter(description = "Message correlation UUID. Opcional; si se envia,"
+                    + " debe ser un UUID valido")
+            @RequestHeader(value = "correlation_id", required = false) String correlationId,
+            @Parameter(description = "Unique UUID to identify the resource. Opcional; si se"
+                    + " envia, debe ser un UUID valido")
+            @RequestHeader(value = "request_id", required = false) String requestId,
             @Parameter(description = "URL de contexto con el socio delante:"
                     + " <partnerId>/<archivo>, por ejemplo 12345/image1.png")
             @RequestParam("context_url") @NotBlank String contextUrl) {
+
+        // Opcionales, pero no cualquier cosa: un identificador de trazado malformado no
+        // traza nada y contamina la correlacion de extremo a extremo aguas abajo. El eco
+        // en la respuesta lo pone el CorrelationFilter, no este metodo.
+        CorrelationIds.optionalUuid("correlation_id", correlationId);
+        CorrelationIds.optionalUuid("request_id", requestId);
 
         StoredFile file = mediator.dispatch(new GetContentLoadedQuery(contextUrl));
 

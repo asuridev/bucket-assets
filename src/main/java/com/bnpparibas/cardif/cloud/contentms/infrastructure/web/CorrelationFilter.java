@@ -1,6 +1,7 @@
 package com.bnpparibas.cardif.cloud.contentms.infrastructure.web;
 
 import com.bnpparibas.cardif.cloud.contentms.infrastructure.correlation.CorrelationContext;
+import com.bnpparibas.cardif.cloud.contentms.infrastructure.correlation.CorrelationIds;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,21 +15,29 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Abre el contexto de correlacion en cada peticion HTTP y devuelve los tres
- * identificadores del HU-211 en la respuesta.
+ * Abre el contexto de correlacion en cada peticion HTTP y devuelve en la respuesta los
+ * identificadores del HU-211 que hayan entrado.
  *
- * <p>El filtro NO rechaza la peticion si faltan: eso es cosa del controller, que los
- * declara con {@code @RequestHeader} y produce un 400 con el cuerpo de error del
- * contrato. Aqui solo se toma lo que haya, generando una correlacion si el cliente no
- * la manda, para que hasta las peticiones malformadas queden trazadas en el log.
+ * <p>El filtro NO rechaza la peticion si faltan ni si vienen malformados: eso es cosa del
+ * controller, que los declara con {@code @RequestHeader} y produce un 400 con el cuerpo de
+ * error del contrato. Aqui el trazado es best-effort — un filtro vive fuera del
+ * {@code DispatcherServlet}, asi que lo que lanzara no lo veria el
+ * {@code ApiExceptionHandler}. Se ordena casi al principio de la cadena por esa misma
+ * razon: que hasta las peticiones malformadas queden trazadas en el log.
  *
- * <p>Se ordena casi al principio de la cadena por esa misma razon.
+ * <p><b>El GET de descarga es distinto en dos cosas</b>, porque alli
+ * {@code correlation_id} y {@code request_id} son OPCIONALES ({@code _p} no existe):
  *
- * <p><b>Excepcion:</b> el GET de descarga se salta el filtro entero. Ese endpoint no
- * admite ninguna de las tres cabeceras ni de entrada ni de salida, y como el filtro
- * genera una correlacion cuando falta y la escribe en la respuesta, dejarlo pasar
- * seria devolver justo lo que el contrato del GET ya no lleva. A cambio, sus lineas
- * de log salen sin correlacion.
+ * <ul>
+ *   <li>no se genera correlacion cuando falta — el contrato del GET dice que quien no
+ *       manda cabeceras tampoco las recibe de vuelta, y generar una seria devolver algo
+ *       que el cliente no pidio;</li>
+ *   <li>un valor presente pero que no sea un UUID canonico se descarta en vez de entrar
+ *       al MDC: el controller lo convertira en un 400 acto seguido, y mientras tanto el
+ *       log no se ensucia con un identificador que no traza nada.</li>
+ * </ul>
+ *
+ * <p>En el POST las tres cabeceras siguen siendo obligatorias y su valor se toma tal cual.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -40,32 +49,38 @@ public class CorrelationFilter extends OncePerRequestFilter {
 
     private static final String DOWNLOAD_PATH = "/v1/content-loaded";
 
-    /** El GET de descarga va sin cabeceras de correlacion: ni se leen ni se devuelven. */
-    @Override
-    protected boolean shouldNotFilter(HttpServletRequest request) {
-        return HttpMethod.GET.matches(request.getMethod())
-                && DOWNLOAD_PATH.equals(request.getRequestURI());
-    }
-
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
             FilterChain chain) throws ServletException, IOException {
         String correlationId = request.getHeader(HEADER_CORRELATION_ID);
-        if (correlationId == null || correlationId.isBlank()) {
-            correlationId = UUID.randomUUID().toString();
-        }
         String requestId = request.getHeader(HEADER_REQUEST_ID);
         String partnerId = request.getHeader(HEADER_PARTNER_ID);
 
+        if (isDownload(request)) {
+            correlationId = uuidOrNull(correlationId);
+            requestId = uuidOrNull(requestId);
+        } else if (correlationId == null || correlationId.isBlank()) {
+            correlationId = UUID.randomUUID().toString();
+        }
+
         try {
             CorrelationContext.set(correlationId, requestId, partnerId);
-            response.setHeader(HEADER_CORRELATION_ID, correlationId);
+            setIfPresent(response, HEADER_CORRELATION_ID, correlationId);
             setIfPresent(response, HEADER_REQUEST_ID, requestId);
             setIfPresent(response, HEADER_PARTNER_ID, partnerId);
             chain.doFilter(request, response);
         } finally {
             CorrelationContext.clear();
         }
+    }
+
+    private static boolean isDownload(HttpServletRequest request) {
+        return HttpMethod.GET.matches(request.getMethod())
+                && DOWNLOAD_PATH.equals(request.getRequestURI());
+    }
+
+    private static String uuidOrNull(String value) {
+        return CorrelationIds.isUuid(value) ? value.trim() : null;
     }
 
     private static void setIfPresent(HttpServletResponse response, String header, String value) {

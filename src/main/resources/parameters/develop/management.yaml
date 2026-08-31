@@ -1,4 +1,11 @@
 management:
+  # El starter de Redis anade su propio indicador de salud, y con el /actuator/health se
+  # pone DOWN en cuanto Redis no responde. Aqui eso seria un contrasentido: la cache degrada
+  # a miss y el servicio sigue sirviendo archivos desde el COS, asi que marcar el pod como
+  # enfermo solo consigue que Code Engine lo reinicie sin motivo.
+  health:
+    redis:
+      enabled: false
   endpoints:
     web:
       exposure:

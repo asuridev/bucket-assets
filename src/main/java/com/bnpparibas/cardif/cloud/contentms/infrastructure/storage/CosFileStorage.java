@@ -24,8 +24,11 @@ import org.springframework.stereotype.Component;
 /**
  * Adaptador del puerto {@link FileStorage} contra IBM Cloud Object Storage.
  *
- * <p>Es el unico adaptador del puerto: todos los perfiles hablan con un object storage
- * de verdad. Lo que cambia por entorno es contra quien y como se firma
+ * <p>Es el unico adaptador que habla con el proveedor: todos los perfiles usan un object
+ * storage de verdad. {@link CachedFileStorage} tambien implementa el puerto, pero no es un
+ * segundo almacen — es un decorador que acaba delegando aqui.
+ *
+ * <p>Lo que cambia por entorno es contra quien y como se firma
  * ({@code storage.auth-mode}: IAM contra el COS real, HMAC contra el MinIO local),
  * nunca la ruta de codigo.
  *
@@ -34,8 +37,15 @@ import org.springframework.stereotype.Component;
  * {@link FileNotFoundError} (condicion de negocio, 404 al cliente), cualquier otro
  * fallo de red o del proveedor es {@link StorageUnavailableError} (503, reintentable).
  */
-@Component
+@Component(CosFileStorage.BEAN_NAME)
 public class CosFileStorage implements FileStorage {
+
+    /**
+     * Nombre explicito del bean. Desde que existe {@link CachedFileStorage} hay dos
+     * implementaciones del puerto, y el decorador tiene que pedir ESTA por su nombre para
+     * no inyectarse a si mismo.
+     */
+    public static final String BEAN_NAME = "cosFileStorage";
 
     private static final Logger log = LoggerFactory.getLogger(CosFileStorage.class);
 

@@ -72,7 +72,7 @@
                 {
                   "key": "file",
                   "type": "file",
-                  "src": null,
+                  "src": "image1.png",
                   "description": "Selecciona postman/image1.png u otro archivo admitido. No hace falta declarar el Content-Type: el servicio lo deduce de la extension de fileName."
                 }
               ]
@@ -189,6 +189,33 @@
           }
         },
         {
+          "name": "400 - correlation_id no es un UUID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('codigo INVALID_UUID_HEADER', () =>",
+                  "    pm.expect(pm.response.json().errorDetail.code).to.eql('INVALID_UUID_HEADER'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "correlation_id", "value": "no-es-un-uuid" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{partnerId}}%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{partnerId}}%2F{{fileName}}" }]
+            },
+            "description": "correlation_id y request_id son opcionales en el GET, pero si se envian tienen que ser un UUID canonico. Un valor malformado no traza nada y ensucia la correlacion aguas abajo, asi que se rechaza con 400 INVALID_UUID_HEADER."
+          }
+        },
+        {
           "name": "400 - path traversal a otro socio",
           "event": [
             {
@@ -294,7 +321,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "jsonString", "value": "esto no es json", "type": "text" },
-                { "key": "file", "type": "file", "src": null }
+                { "key": "file", "type": "file", "src": "image1.png" }
               ]
             },
             "url": {
@@ -339,7 +366,7 @@
                 {
                   "key": "file",
                   "type": "file",
-                  "src": null,
+                  "src": "nota.txt",
                   "contentType": "text/plain",
                   "description": "Selecciona postman/nota.txt. La extension .txt no esta en el mapa del servicio, asi que manda el text/plain declarado aqui, que el bucket no admite: 422."
                 }
@@ -380,6 +407,81 @@
               "host": ["{{baseUrl}}"],
               "path": ["actuator", "health"]
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Cache",
+      "description": "La cache de Redis del GET. Depende de que el archivo exista, asi que ejecuta antes 1. Flujo principal. Estas dos peticiones solo comprueban que la segunda respuesta es identica a la primera; que la segunda NO toco el bucket se demuestra apagando MinIO entre ambas (sin cache seria un 503 STORAGE_UNAVAILABLE).",
+      "item": [
+        {
+          "name": "GET (1a vez: puebla la cache)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "// Se guardan para compararlos con la respuesta servida desde la cache.",
+                  "pm.collectionVariables.set('cacheSize', pm.response.responseSize);",
+                  "pm.collectionVariables.set('cacheType', pm.response.headers.get('Content-Type'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{partnerId}}%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{partnerId}}%2F{{fileName}}" }]
+            },
+            "description": "Primera peticion al recurso: es un miss, baja el binario del COS y lo deja en Redis. Guarda tamano y Content-Type para que la peticion siguiente pueda compararlos. Para ver la entrada: podman exec contentms-redis redis-cli KEYS 'contentms:*'"
+          }
+        },
+        {
+          "name": "GET (2a vez: desde la cache)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('el binario es identico al de la primera peticion', () => {",
+                  "    pm.expect(pm.response.responseSize)",
+                  "      .to.eql(Number(pm.collectionVariables.get('cacheSize')));",
+                  "});",
+                  "",
+                  "pm.test('el Content-Type sobrevive al viaje por Redis', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type'))",
+                  "      .to.eql(pm.collectionVariables.get('cacheType'));",
+                  "});",
+                  "",
+                  "pm.test('el responseHeader del HU sigue viajando como headers', () => {",
+                  "    pm.expect(pm.response.headers.get('returnCode')).to.eql('200');",
+                  "    pm.expect(pm.response.headers.get('message')).to.eql('OK');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/content-loaded?context_url={{partnerId}}%2F{{fileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "content-loaded"],
+              "query": [{ "key": "context_url", "value": "{{partnerId}}%2F{{fileName}}" }]
+            },
+            "description": "Misma peticion: debe devolver exactamente lo mismo que la anterior. Que salga de la cache y no del bucket se demuestra apagando MinIO entre las dos peticiones (podman stop contentms-minio, relanzar solo esta carpeta, podman start contentms-minio): sin cache seria un 503."
           }
         }
       ]

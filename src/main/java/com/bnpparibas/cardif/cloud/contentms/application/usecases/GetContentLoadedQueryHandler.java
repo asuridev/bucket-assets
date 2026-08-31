@@ -12,10 +12,11 @@ import com.bnpparibas.cardif.cloud.contentms.domain.storage.StoredFile;
 /**
  * Devuelve el archivo migrado como binario.
  *
- * <p>El HU-211 describe tres pasos: mirar en la cache de Redis, ir al COS si no esta,
- * y repoblar la cache. Esta iteracion implementa solo el COS. Cuando se anada la
- * cache, el sitio es un decorador del puerto {@link FileStorage}, no este metodo:
- * asi el caso de uso no cambia y la cache queda comprobable por separado.
+ * <p>El HU-211 describe tres pasos: mirar en la cache de Redis, ir al COS si no esta, y
+ * repoblar la cache. Los tres ocurren, pero ninguno se ve aqui: viven en
+ * {@code CachedFileStorage}, un decorador del puerto {@link FileStorage}. Por eso este
+ * metodo se limita a pedir el archivo — la cache es una decision de infraestructura y este
+ * caso de uso no tiene por que saber que existe.
  */
 @ApplicationComponent
 public class GetContentLoadedQueryHandler implements QueryHandler<GetContentLoadedQuery, StoredFile> {

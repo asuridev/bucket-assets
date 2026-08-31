@@ -6,7 +6,7 @@ IBM Code Engine. Implementa la [HU-211](HU-211.md):
 | Endpoint | Qué hace |
 |---|---|
 | `POST /v1/save-content` | Guarda un archivo en el COS de CMS bajo `/partnerId/Object` |
-| `GET /v1/content-loaded?context_url=<partnerId>/<archivo>` | Devuelve el archivo como binario, sin cabeceras |
+| `GET /v1/content-loaded?context_url=<partnerId>/<archivo>` | Devuelve el archivo como binario; sin cabeceras obligatorias |
 
 Spring Boot 3.5.3 · Java 21 · Maven · arquitectura hexagonal (`domain` → `application` → `infrastructure`).
 
@@ -72,11 +72,14 @@ El servicio escucha en `http://localhost:8080`. Swagger UI en
 
 ---
 
-## 4. MinIO y el bucket
+## 4. MinIO, el bucket y Redis
 
-El compose levanta MinIO **y crea el bucket solo**: no hay ningún paso manual. Lo hace un
-contenedor `minio-init` que espera al healthcheck de MinIO y lanza `mc mb --ignore-existing`,
-así que es idempotente y puedes repetir el `up` sin romper nada.
+El compose levanta tres cosas: **MinIO**, un contenedor `minio-init` que **crea el bucket
+solo** (espera al healthcheck de MinIO y lanza `mc mb --ignore-existing`, así que es
+idempotente y puedes repetir el `up` sin romper nada) y **Redis**, que es la caché del GET.
+
+Redis va sin volumen a propósito: una caché no tiene que sobrevivir a un `down`, y así cada
+arranque parte en frío, que es lo que se quiere para probarla.
 
 ### Con Podman
 
@@ -101,8 +104,9 @@ docker compose -f deploy/docker-compose.yaml down
 ### Comprobar que arrancó
 
 ```bash
-podman ps                                    # contentms-minio debe estar "healthy"
+podman ps                                    # contentms-minio y contentms-redis, "healthy"
 podman logs contentms-minio-init             # "Bucket cms-content listo (privado)"
+podman exec contentms-redis redis-cli ping   # PONG
 ```
 
 `contentms-minio-init` queda en `Exited (0)`. **Eso es lo correcto**: es un contenedor de un
@@ -145,6 +149,13 @@ curl -i -X POST http://localhost:8080/v1/save-content \
 curl -i "http://localhost:8080/v1/content-loaded?context_url=12345/image1.png" \
   -o salida.png
 # -> 200, Content-Type: image/png, y salida.png idéntico al original
+
+# Opcionalmente, trazado: si se mandan, tienen que ser UUID y vuelven en la respuesta
+curl -i "http://localhost:8080/v1/content-loaded?context_url=12345/image1.png" \
+  -H "correlation_id: 11111111-1111-1111-1111-111111111111" \
+  -H "request_id: 22222222-2222-2222-2222-222222222222" \
+  -o salida.png
+# -> 200, y las dos cabeceras de vuelta
 ```
 
 En **PowerShell**, `curl` es un alias de `Invoke-WebRequest` y no acepta estos argumentos.
@@ -165,6 +176,7 @@ Todos devuelven el cuerpo `errorHeader` / `errorDetail` del contrato:
 | Caso | Código | `errorDetail.code` |
 |---|---|---|
 | Falta `correlation_id`, `request_id` o `_p` **en el POST** | 400 | `MISSING_REQUIRED_HEADER` |
+| `correlation_id` o `request_id` **en el GET** no es un UUID | 400 | `INVALID_UUID_HEADER` |
 | Falta `context_url` | 400 | `MISSING_REQUIRED_PARAMETER` |
 | `context_url` sin el prefijo `<partnerId>/` | 400 | `INVALID_OBJECT_PATH` |
 | `context_url` con `../` | 400 | `INVALID_OBJECT_PATH` |
@@ -174,8 +186,10 @@ Todos devuelven el cuerpo `errorHeader` / `errorDetail` del contrato:
 | Archivo mayor que el límite | 413 | `FILE_TOO_LARGE` |
 | El COS no responde | 503 | `STORAGE_UNAVAILABLE` |
 
-El GET no lleva cabeceras: `context_url` es su única entrada y ya identifica al socio
-(`12345/image1.png`). Eso significa que **el GET no aísla a un socio de otro**: quien conozca
+El GET no lleva ninguna cabecera obligatoria: `context_url` es su única entrada exigida y ya
+identifica al socio (`12345/image1.png`). `correlation_id` y `request_id` se admiten como
+opcionales —si se envían tienen que ser un UUID canónico y se devuelven tal cual—, pero `_p`
+no existe allí. Eso significa que **el GET no aísla a un socio de otro**: quien conozca
 el id ajeno puede pedir `context_url=99999/x.pdf` y lo obtendrá. La guarda contra `../` sigue
 puesta —impide salirse del espacio de socios—, pero el aislamiento real tendrá que venir de la
 capa de autorización que aún no está cableada.
@@ -210,6 +224,19 @@ compose tal cual.
 | `MINIO_ACCESS_KEY` | `minioadmin` | Access key HMAC |
 | `MINIO_SECRET_KEY` | `minioadmin` | Secret key HMAC |
 | `MINIO_BUCKET_CMS_CONTENT` | `cms-content` | Bucket; el compose lo crea con este mismo valor |
+
+### Variables de la caché
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `CACHE_ENABLED` | `true` | A `false` quita el decorador: el servicio habla solo con el COS |
+| `CACHE_TTL_MINUTES` | `10` local · `60` develop · `1440` production | Minutos que vive una entrada |
+| `REDIS_HOST` | `localhost` (sin default en `production`) | Host de Redis |
+| `REDIS_PORT` | `6379` (sin default en `production`) | Puerto de Redis |
+
+En `production` `REDIS_HOST` y `REDIS_PORT` no traen default, igual que las credenciales del
+COS: con la caché activada, arrancar sin saber dónde está Redis es un fallo de despliegue y
+debe verse al arrancar, no en la primera petición.
 
 ### Variables para COS
 
@@ -256,8 +283,9 @@ src/main/java/com/bnpparibas/cardif/cloud/contentms/
 │   └── usecases/      Los dos handlers
 └── infrastructure/    Todo Spring vive aquí
     ├── rest/          Controller, ApiExceptionHandler, ErrorResponse
-    ├── storage/       CosFileStorage (adaptador del puerto)
-    ├── configurations/
+    ├── storage/       CosFileStorage (adaptador del puerto) +
+    │                  CachedFileStorage (decorador de caché, @Primary)
+    ├── configurations/  usecase/, storage/, cache/, logging/
     └── correlation/   CorrelationContext + filtro
 ```
 
@@ -267,12 +295,66 @@ filtrado en `UseCaseConfig`.
 
 ---
 
-## 8. Fuera de alcance
+## 8. La caché del GET
+
+El paso 1 del HU-211 —mirar Redis antes de ir al COS— está implementado. La primera petición
+a un recurso lo baja del bucket y lo deja en Redis; la segunda y siguientes se sirven de la
+caché hasta que expire el TTL.
+
+**Dónde está.** En `CachedFileStorage`, un decorador que implementa el mismo puerto
+`FileStorage` y está marcado `@Primary`. Los casos de uso reciben esa versión sin cambiar una
+línea: `domain` y `application` no saben que Redis existe.
+
+**Por qué decorar el puerto y no el caso de uso.** Por ese puerto pasan **los dos** endpoints,
+así que `upload` y `delete` invalidan la clave gratis. Volver a subir el mismo `fileName`
+nunca puede dejar el GET sirviendo los bytes viejos. Una caché colgada del handler del GET no
+vería esa escritura.
+
+**Claves.** El nombre de la caché es a la vez el prefijo en Redis:
+
+```
+contentms:content::cmsContent/12345/image1.png
+```
+
+así que `contentms:*` barre lo de este servicio sin tocar nada más de la instancia.
+
+**Si Redis se cae, el servicio sigue.** Un fallo hablando con la caché degrada a *miss*: se
+sirve del COS, se registra un `WARN` y ya. Detrás hay un almacén durable, así que no es motivo
+para dejar de servir archivos. Por lo mismo, `management.health.redis.enabled` es `false` en
+todos los perfiles: una caché inalcanzable no debe poner `/actuator/health` en `DOWN` y hacer
+que Code Engine reinicie el pod.
+
+> **Ojo al depurar:** esa degradación también se traga los fallos de serialización, así que
+> una caché que no cachea **nada** tiene buen aspecto desde fuera. La prueba de que funciona
+> es ver la clave en Redis, no recibir un 200.
+
+**Comprobarlo:**
+
+```bash
+# 1. se puebla
+curl -s -o /dev/null "http://localhost:8080/v1/content-loaded?context_url=12345%2Fimage1.png"
+podman exec contentms-redis redis-cli KEYS 'contentms:*'
+podman exec contentms-redis redis-cli TTL 'contentms:content::cmsContent/12345/image1.png'
+
+# 2. la segunda petición no toca el bucket: se apaga MinIO y sigue devolviendo 200
+podman stop contentms-minio
+curl -s -D - -o /tmp/x.png "http://localhost:8080/v1/content-loaded?context_url=12345%2Fimage1.png" | head -3
+podman start contentms-minio
+```
+
+Un recurso **no** cacheado, con MinIO apagado, da `503 STORAGE_UNAVAILABLE`: ese contraste es
+lo que demuestra que el 200 anterior salió de la caché.
+
+Otros dos detalles: los 404 no se cachean (`FileNotFoundError` es una excepción, no se guarda
+nada, así que subir el archivo después se ve de inmediato), y `@Cacheable(sync = true)` hace
+que N peticiones simultáneas al mismo archivo provoquen **una** descarga del COS.
+
+---
+
+## 9. Fuera de alcance
 
 Cosas que la HU-211 menciona y **no** están implementadas:
 
-- **Caché de Redis** (colección `Components`). El puerto `FileStorage` admite un decorador de
-  caché sin tocar los casos de uso; ese es el sitio.
 - **MongoDB `OutPutsUrls`** — la propia HU la marca como temporal de migración.
 - **Seguridad / 401.** La forma del error está en el contrato, pero no hay emisor: falta
   decidir si es un OAuth2 resource server, el API gateway de Code Engine, u otra cosa.
@@ -293,9 +375,19 @@ quien la escribió:
    PNG y el navegador no lo pintaría. Lo declarado sólo se usa como respaldo cuando la
    extensión es desconocida. No se miran los bytes del archivo: un PDF renombrado a `.png` se
    guardaría como `image/png`.
-5. **El GET va sin cabeceras.** La HU declara `correlation_id`, `request_id` y `_p`
-   obligatorios también en el GET, y pide devolverlos en la respuesta. Aquí se suprimen a
-   propósito: el GET es una descarga con una sola entrada, `context_url`, que ya lleva el
-   socio delante (`12345/image1.png`). Consecuencia a validar con quien escribió la HU: al
-   no haber `_p`, el GET deja de aislar a un socio de otro (ver §5) y sus líneas de log salen
-   sin correlación. El POST mantiene las tres cabeceras tal como las pide la HU.
+5. **En el GET las cabeceras son opcionales.** La HU declara `correlation_id`, `request_id`
+   y `_p` obligatorios también en el GET, y pide devolverlos en la respuesta. Aquí no lo son:
+   el GET es una descarga cuya única entrada exigida es `context_url`, que ya lleva el socio
+   delante (`12345/image1.png`).
+   - `correlation_id` y `request_id` se aceptan si vienen. Si vienen, tienen que ser un UUID
+     canónico (`8-4-4-4-12` hexadecimal) o la petición se corta con un 400
+     `INVALID_UUID_HEADER`: un identificador malformado no traza nada y contamina la
+     correlación aguas abajo. Se valida con expresión regular y no con `UUID.fromString`,
+     que acepta en silencio formas cortas como `1-1-1-1-1`. Los valores válidos se devuelven
+     tal cual y trazan las líneas de log de esa petición; si no llegan, **no se genera
+     ninguno** y la respuesta no los lleva, que es el comportamiento de siempre.
+   - `_p` sigue sin existir en el GET. Consecuencia a validar con quien escribió la HU: sin
+     él, el GET no aísla a un socio de otro (ver §5).
+
+   El POST mantiene las tres cabeceras obligatorias tal como las pide la HU, y allí su valor
+   se toma tal cual, sin exigir formato.

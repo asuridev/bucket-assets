@@ -1,0 +1,15 @@
+# Cache de Redis de produccion. Host y puerto sin default, igual que las credenciales del
+# COS: con la cache activada, arrancar sin saber donde esta Redis es un fallo de despliegue
+# y debe verse al arrancar, no en la primera peticion.
+#
+# El TTL es largo porque el contenido es estatico migrado de Liferay: solo cambia si alguien
+# vuelve a subir el archivo, y eso ya invalida la entrada por su cuenta.
+cache:
+  enabled: ${CACHE_ENABLED:true}
+  ttl-minutes: ${CACHE_TTL_MINUTES:1440}
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}

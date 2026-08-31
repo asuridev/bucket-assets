@@ -1,0 +1,11 @@
+# Cache de Redis contra el contenedor que levanta deploy/docker-compose.yaml.
+# TTL corto a proposito: en local interesa poder ver expirar una entrada sin esperar.
+cache:
+  enabled: ${CACHE_ENABLED:true}
+  ttl-minutes: ${CACHE_TTL_MINUTES:10}
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}

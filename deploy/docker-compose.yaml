@@ -32,6 +32,19 @@ services:
       timeout: 5s
       retries: 20
 
+  # Cache del GET. Sin volumen a proposito: una cache no tiene que sobrevivir a un `down`,
+  # y asi cada arranque parte en frio, que es justo lo que se quiere para probarla.
+  redis:
+    image: redis:7-alpine
+    container_name: contentms-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   # MinIO arranca vacio: sin este paso la primera subida falla con NoSuchBucket.
   # Es idempotente, asi que se puede volver a levantar sin romper nada.
   minio-init:
