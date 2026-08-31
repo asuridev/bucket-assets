@@ -8,6 +8,13 @@
 # El servicio se arranca aparte, con PROFILE=minio, para poder reiniciarlo sin
 # tocar el almacen.
 #
+# En DevX (donde solo se puede exponer HTTP, y por subpath) hay que pasarle las URLs
+# publicas por fichero de entorno:
+#
+#   podman-compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d
+#
+# Plantilla en deploy/.env.devx.example.
+#
 # USA podman-compose (el de Python), NO `podman compose`: este ultimo delega en el
 # docker-compose.exe de WindowsApps, que necesita el named pipe de la API Docker, y
 # en esta maquina win-sshproxy.exe no arranca, asi que el pipe no existe.
@@ -21,6 +28,10 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      # URL publica desde la que se abre la consola. En local es ella misma; en DevX es la
+      # forwarded address del 9001, que va por subpath. Sin esto la consola redirige a
+      # localhost y no carga. No puede ir vacia: MinIO valida el valor como URL.
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_PUBLIC_URL:-http://localhost:9001}
     ports:
       - "9000:9000"   # API S3 -> es la que consume ContentMS
       - "9001:9001"   # consola web
@@ -44,6 +55,26 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # UI web de Redis. En DevX no hay `exec` ni acceso al 6379: solo se expone HTTP, asi que
+  # mirar las claves de la cache tiene que entrar por aqui y no por redis-cli.
+  # URL_PREFIX es para cuando el proxy sirve la UI bajo /user/<user>/http/8081 en vez de en
+  # la raiz; en local va vacio. Tag fijo 0.9.1: es la ultima release, `latest` es una nightly.
+  redis-ui:
+    image: ghcr.io/joeferner/redis-commander:0.9.1
+    container_name: contentms-redis-ui
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # `redis` es el nombre del servicio del compose, no localhost: la UI habla con Redis
+      # por la red interna, no por el puerto publicado.
+      REDIS_HOSTS: local:redis:6379
+      URL_PREFIX: ${REDIS_UI_BASE_PATH:-}
+      HTTP_USER: ${REDIS_UI_USER:-admin}
+      HTTP_PASSWORD: ${REDIS_UI_PASSWORD:-admin}
+    ports:
+      - "${REDIS_UI_PORT:-8081}:8081"
 
   # MinIO arranca vacio: sin este paso la primera subida falla con NoSuchBucket.
   # Es idempotente, asi que se puede volver a levantar sin romper nada.

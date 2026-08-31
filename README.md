@@ -74,9 +74,10 @@ El servicio escucha en `http://localhost:8080`. Swagger UI en
 
 ## 4. MinIO, el bucket y Redis
 
-El compose levanta tres cosas: **MinIO**, un contenedor `minio-init` que **crea el bucket
+El compose levanta cuatro cosas: **MinIO**, un contenedor `minio-init` que **crea el bucket
 solo** (espera al healthcheck de MinIO y lanza `mc mb --ignore-existing`, así que es
-idempotente y puedes repetir el `up` sin romper nada) y **Redis**, que es la caché del GET.
+idempotente y puedes repetir el `up` sin romper nada), **Redis**, que es la caché del GET, y
+**Redis Commander**, una UI web para mirar las claves de esa caché sin `redis-cli`.
 
 Redis va sin volumen a propósito: una caché no tiene que sobrevivir a un `down`, y así cada
 arranque parte en frío, que es lo que se quiere para probarla.
@@ -104,7 +105,7 @@ docker compose -f deploy/docker-compose.yaml down
 ### Comprobar que arrancó
 
 ```bash
-podman ps                                    # contentms-minio y contentms-redis, "healthy"
+podman ps                                    # contentms-minio, -redis y -redis-ui arriba
 podman logs contentms-minio-init             # "Bucket cms-content listo (privado)"
 podman exec contentms-redis redis-cli ping   # PONG
 ```
@@ -113,6 +114,59 @@ podman exec contentms-redis redis-cli ping   # PONG
 solo uso que crea el bucket y termina.
 
 Consola web de MinIO: [http://localhost:9001](http://localhost:9001) (`minioadmin` / `minioadmin`).
+Redis Commander: [http://localhost:8081](http://localhost:8081), con la conexión `local` ya
+configurada: no hay que añadirla a mano. Pide login (`admin` / `admin`) — es un formulario
+que emite un JWT, no basic auth, así que sin credenciales la API responde `401`.
+
+### En DevX
+
+DevX solo deja exponer **HTTP**, y encima como subpath de un host compartido:
+
+```
+https://devx-cardif04.staging.echonet/user/<usuario>/http/8080/    # el servicio
+https://devx-cardif04.staging.echonet/user/<usuario>/http/9001/    # consola de MinIO
+https://devx-cardif04.staging.echonet/user/<usuario>/http/8081/    # Redis Commander
+```
+
+Ahí no hay `podman exec` ni puerto 6379, así que **Redis Commander es la única forma de ver
+la caché**.
+
+**1. Prepara el entorno.** Copia [`deploy/.env.devx.example`](deploy/.env.devx.example) a
+`deploy/.env.devx` (ignorado por git) y edítalo: sustituye `<usuario>` por el tuyo (`j31399`)
+y **cambia `REDIS_UI_USER` / `REDIS_UI_PASSWORD`** — esa URL es alcanzable y detrás hay una
+consola con acceso total a la caché.
+
+```bash
+cp deploy/.env.devx.example deploy/.env.devx
+podman-compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d
+```
+
+**2. Publica el puerto.** En el panel **PORTS** haz *Add Port* del **8081**; si no, no tiene
+forwarded address.
+
+**3. Averigua si el proxy reenvía el prefijo**, antes de fiarte de nada. Abre la consola de
+MinIO por su URL de DevX (`…/http/9001/`) y mira en DevTools → Network a qué ruta pide los
+assets:
+
+| Los assets van a… | Significa | `REDIS_UI_BASE_PATH` |
+|---|---|---|
+| `/user/<usuario>/http/9001/static/…` | el prefijo llega al contenedor | `/user/<usuario>/http/8081` |
+| `/static/…` (404 contra la raíz del host) | DevX lo recorta | vacío |
+
+**4. Aplica el valor** y recrea solo ese contenedor:
+
+```bash
+podman-compose -f deploy/docker-compose.yaml --env-file deploy/.env.devx up -d redis-ui
+```
+
+**5. Abre la UI** en `https://devx-cardif04.staging.echonet/user/<usuario>/http/8081/`. Con
+prefijo puesto, Redis Commander responde **solo** bajo esa ruta y la raíz da `401`; sin
+prefijo, responde en la raíz. Si te encuentras un `401` o una página en blanco donde
+esperabas el login, el valor está al revés: cámbialo y repite el paso 4.
+
+**6. Comprueba la caché** igual que en local (§8), pero pidiendo el GET contra
+`https://devx-cardif04.staging.echonet/user/<usuario>/http/8080/v1/content-loaded?context_url=…`
+y mirando la clave en la UI en vez de con `redis-cli`.
 
 ---
 
@@ -238,6 +292,19 @@ En `production` `REDIS_HOST` y `REDIS_PORT` no traen default, igual que las cred
 COS: con la caché activada, arrancar sin saber dónde está Redis es un fallo de despliegue y
 debe verse al arrancar, no en la primera petición.
 
+### Variables del compose (no las lee el servicio)
+
+Estas solo las consume `deploy/docker-compose.yaml`. En local no hace falta exportar ninguna;
+en DevX van en `deploy/.env.devx` (plantilla en `deploy/.env.devx.example`).
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `MINIO_PUBLIC_URL` | `http://localhost:9001` | `MINIO_BROWSER_REDIRECT_URL` de la consola. Sin barra final; no puede ir vacía, MinIO la valida como URL |
+| `REDIS_UI_PORT` | `8081` | Puerto publicado de Redis Commander |
+| `REDIS_UI_BASE_PATH` | vacío | `URL_PREFIX` de la UI. Solo si el proxy reenvía el prefijo (ver §4) |
+| `REDIS_UI_USER` | `admin` | Basic auth de la UI |
+| `REDIS_UI_PASSWORD` | `admin` | Basic auth de la UI. **Cámbiala en DevX** |
+
 ### Variables para COS
 
 `develop` y `production` no traen valores por defecto en lo obligatorio, a propósito: la app
@@ -341,6 +408,10 @@ podman stop contentms-minio
 curl -s -D - -o /tmp/x.png "http://localhost:8080/v1/content-loaded?context_url=12345%2Fimage1.png" | head -3
 podman start contentms-minio
 ```
+
+Lo mismo sin terminal, en [Redis Commander](http://localhost:8081): conexión `local`, filtro
+`contentms:*`, y la clave muestra su TTL. En DevX es la única vía, porque allí no hay `exec`
+ni acceso al 6379.
 
 Un recurso **no** cacheado, con MinIO apagado, da `503 STORAGE_UNAVAILABLE`: ese contraste es
 lo que demuestra que el 200 anterior salió de la caché.

@@ -30,8 +30,12 @@ No test suite exists yet (`src/test` is empty).
 
 Local infrastructure: `podman-compose -f deploy/docker-compose.yaml up -d` (prefer
 `podman-compose`, the Python one, over `podman compose` — see README §4 for why on Windows).
-It brings up MinIO (S3, auto-creating the bucket via a one-shot `minio-init` container) and
-Redis (the GET cache; no volume, so every start is cold).
+It brings up MinIO (S3, auto-creating the bucket via a one-shot `minio-init` container),
+Redis (the GET cache; no volume, so every start is cold) and Redis Commander on `:8081`
+(`admin`/`admin`), a web UI over that cache — the only way to inspect it in DevX, where
+there is no `exec` and no TCP 6379, only HTTP exposed under a subpath. The public URLs of
+that environment are parameterised (`MINIO_PUBLIC_URL`, `REDIS_UI_BASE_PATH`,
+`REDIS_UI_USER`/`_PASSWORD`); template in `deploy/.env.devx.example`, README §4.
 
 Service listens on `http://localhost:8080`; Swagger UI at `/swagger-ui.html`.
 
