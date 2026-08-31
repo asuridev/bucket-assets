@@ -98,16 +98,14 @@ services:
       MONGO_UI_BASE_PATH: ${MONGO_UI_BASE_PATH:-}
     volumes:
       - ./nginx/default.conf.template:/tmp/default.conf.template:ro
-    # La sustitucion la hacemos a mano, que es lo que la imagen oficial hacia sola. El
-    # argumento de envsubst limita que variables se tocan: sin el se comeria $host, $scheme y
-    # el $1 del proxy_redirect. En YAML va con $$ para que compose no lo sustituya antes.
-    command:
-      - /bin/sh
-      - -c
-      - >
-        envsubst '$$MONGO_UI_BASE_PATH' < /tmp/default.conf.template
-        > /opt/bitnami/nginx/conf/server_blocks/mongo-ui.conf &&
-        exec /opt/bitnami/scripts/nginx/entrypoint.sh /opt/bitnami/scripts/nginx/run.sh
+      - ./nginx/render-and-run.sh:/tmp/render-and-run.sh:ro
+    # La generacion de la config vive en un script APARTE, no aqui: dentro del YAML habria que
+    # escribir el dolar como "$$" para que compose no lo expandiera, y hay implementaciones de
+    # compose (la de DevX) que no respetan esa convencion -> envsubst recibe basura y el
+    # contenedor muere al arrancar. En un .sh el "$" es literal para todo el mundo.
+    # Se invoca con `sh <script>` y no por shebang, asi no depende del bit de ejecucion, que
+    # Windows no conserva.
+    command: ["/bin/sh", "/tmp/render-and-run.sh"]
     ports:
       - "8082:8082"
 
