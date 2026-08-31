@@ -1,0 +1,3 @@
+# Los .sh se montan dentro de contenedores Linux: con CRLF, sh falla con un
+# "not found" indescifrable. Fuerza LF pase lo que pase en el checkout de Windows.
+*.sh text eol=lf

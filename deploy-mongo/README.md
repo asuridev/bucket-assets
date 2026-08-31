@@ -104,22 +104,34 @@ La trampa es la segunda fila: montar el `.template` en `/etc/nginx/templates` co
 Bitnami **no da ningún error**. Simplemente nadie lo lee, nginx arranca con su configuración
 por defecto y el 8082 se queda sin escuchar — desde fuera lo ves como un `502 Bad Gateway`.
 
-Por eso la config se genera al arrancar, en
-[`nginx/render-and-run.sh`](nginx/render-and-run.sh), que hace el `envsubst` y cede el control
-al entrypoint de Bitnami. Dos detalles del montaje, ambos por experiencia:
+Por eso el compose **monta un `.conf` ya resuelto** en `server_blocks/`, y no genera nada al
+arrancar:
 
-- **El script es un fichero aparte, no un `command:` en el YAML.** Dentro del compose habría
-  que escribir el dólar como `$$` para que no lo expandiera él, y hay implementaciones de
-  compose —la de DevX— que no respetan esa convención: `envsubst` recibe basura y el contenedor
-  muere nada más arrancar. En un `.sh` el `$` es literal para todos.
-- **`envsubst '$MONGO_UI_BASE_PATH'`, con el argumento.** No es decorativo: limita qué
-  variables se sustituyen. Sin él se comería `$host`, `$scheme` y el `$1` del `proxy_redirect`,
-  dejándolos vacíos.
+```
+nginx/default.conf.template   ← la plantilla, con ${MONGO_UI_BASE_PATH} sin resolver
+nginx/mongo-ui.conf           ← lo que se monta. Commiteado con el prefijo VACÍO (= local)
+```
 
-El script se invoca con `sh <fichero>` en vez de por shebang, así no depende del bit de
-ejecución, que Windows no conserva. Y si el `.template` no está donde dice el compose, aborta
-con un mensaje claro: Docker, ante una ruta que no existe, monta un **directorio** vacío en su
-lugar, y el error que da `envsubst` sin esa comprobación no se entiende.
+Para DevX se regenera con el prefijo dentro:
+
+```bash
+cd deploy-mongo/nginx
+sed 's|${MONGO_UI_BASE_PATH}|/user/<usuario>/http/8082|g' default.conf.template > mongo-ui.conf
+docker compose -f ../docker-compose.yaml up -d --force-recreate mongo-ui-proxy
+```
+
+Y para volver a local, lo mismo sustituyendo por cadena vacía:
+`sed 's|${MONGO_UI_BASE_PATH}||g' …`.
+
+Se descartaron las dos alternativas que generan la config sola, y por motivos vividos: el
+`command:` en el YAML obliga a escribir el dólar como `$$`, y el `docker compose` de DevX no
+respeta esa convención —`envsubst` recibe basura y el contenedor muere al arrancar—; y un
+script montado depende de que el fichero exista en esa ruta exacta (si no, Docker monta un
+**directorio** vacío y `sh` muere) y de que tenga finales de línea Unix. Un `.conf` ya resuelto
+no depende de nada: el contenedor arranca con su entrypoint de siempre.
+
+Lo que se paga: el prefijo queda escrito en el fichero, así que **`mongo-ui.conf` regenerado
+aparecerá como modificado en git**. Es lo esperado; no lo commitees con tu prefijo dentro.
 
 Lo que sí trae Bitnami es `ngx_http_sub_module` (verificable con `nginx -V`), que es lo único
 que el shim necesita de verdad.
@@ -131,7 +143,7 @@ que el shim necesita de verdad.
 | La UI carga pero **sin estilos** | `MONGO_UI_BASE_PATH` no coincide con el prefijo real de la URL (típico: quedó el `<usuario>` de la plantilla) | Corregirlo y `up -d --force-recreate mongo-ui-proxy` |
 | `502 Bad Gateway` | DevX perdió el forwarding del 8082 al recrear el contenedor | Quitar y volver a añadir el puerto en PORTS |
 | `host not found in upstream "mongo-express"` al arrancar nginx | Se levantó el proxy con la UI parada | `up -d` del stack completo |
-| `502 Bad Gateway` y en el log de nginx `Welcome to the Bitnami nginx container` sin más | La configuración no se cargó: con la imagen de Bitnami el `.template` montado en `/etc/nginx/templates` se ignora en silencio | El log debe traer la línea `server block generado en …`. Si no, comprobar que existe `/opt/bitnami/nginx/conf/server_blocks/mongo-ui.conf` dentro del contenedor |
-| El contenedor de nginx arranca y muere en el acto | El script no encontró el `.template`, o el compose expandió mal el `$` | `docker logs`: el script dice explícitamente cuál de los dos es |
+| `502 Bad Gateway` y en el log de nginx solo `Welcome to the Bitnami nginx container` | La configuración no se cargó: nginx arrancó con la suya por defecto, en el 8080, y el 8082 se quedó sin escuchar | `docker exec contentms-mongo-ui-proxy ls /opt/bitnami/nginx/conf/server_blocks/` debe listar `mongo-ui.conf`. Si sale vacío o es un directorio, la ruta del volumen no cuadra |
+| La UI carga sin estilos | `mongo-ui.conf` tiene un prefijo distinto al de la URL | Regenerarlo con el `sed` y `up -d --force-recreate mongo-ui-proxy` |
 | mongo-express no arranca nunca y se queda esperando a Mongo | Un `depends_on` con `condition: service_healthy`: si el healthcheck de Mongo falla en ese entorno, la UI no llega a levantar jamás | Ya no está en el compose, a propósito. mongo-express no necesita Mongo listo: arranca, escucha, y conecta cuando Mongo aparece |
 | La UI no lista bases | Credenciales de Mongo distintas entre `mongo` y `mongo-express` | Revisar `MONGO_ROOT_USER` / `MONGO_ROOT_PASSWORD` en el `.env` |

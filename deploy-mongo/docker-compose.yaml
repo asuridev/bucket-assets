@@ -94,18 +94,15 @@ services:
     container_name: contentms-mongo-ui-proxy
     depends_on:
       - mongo-express
-    environment:
-      MONGO_UI_BASE_PATH: ${MONGO_UI_BASE_PATH:-}
     volumes:
-      - ./nginx/default.conf.template:/tmp/default.conf.template:ro
-      - ./nginx/render-and-run.sh:/tmp/render-and-run.sh:ro
-    # La generacion de la config vive en un script APARTE, no aqui: dentro del YAML habria que
-    # escribir el dolar como "$$" para que compose no lo expandiera, y hay implementaciones de
-    # compose (la de DevX) que no respetan esa convencion -> envsubst recibe basura y el
-    # contenedor muere al arrancar. En un .sh el "$" es literal para todo el mundo.
-    # Se invoca con `sh <script>` y no por shebang, asi no depende del bit de ejecucion, que
-    # Windows no conserva.
-    command: ["/bin/sh", "/tmp/render-and-run.sh"]
+      # Se monta un .conf YA RESUELTO, generado a mano desde default.conf.template (ver la
+      # cabecera de la plantilla). Sin command:, sin envsubst y sin scripts: el contenedor
+      # arranca con su entrypoint de siempre y lo unico que hace el compose es dejarle el
+      # fichero donde Bitnami lo busca. Es la variante que no depende de como el compose de
+      # turno expanda el "$" ni de que un script montado exista con finales de linea Unix.
+      # El precio: el prefijo queda escrito dentro del .conf, asi que hay que regenerarlo si
+      # cambia. El fichero commiteado lleva el prefijo VACIO, que es lo que vale en local.
+      - ./nginx/mongo-ui.conf:/opt/bitnami/nginx/conf/server_blocks/mongo-ui.conf:ro
     ports:
       - "8082:8082"
 
