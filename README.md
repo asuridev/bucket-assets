@@ -474,3 +474,12 @@ quien la escribió:
 
    El POST mantiene las tres cabeceras obligatorias tal como las pide la HU, y allí su valor
    se toma tal cual, sin exigir formato.
+
+
+cd ~/projects/infra/nginx
+sed 's|${MONGO_UI_BASE_PATH}|/user/j31399/http/8082|g' default.conf.template > mongo-ui.conf
+grep -c 'user/j31399' mongo-ui.conf          # tiene que dar 7
+
+cd ~/projects/infra
+docker compose down
+docker compose up -d

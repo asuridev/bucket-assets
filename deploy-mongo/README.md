@@ -112,16 +112,34 @@ nginx/default.conf.template   ← la plantilla, con ${MONGO_UI_BASE_PATH} sin re
 nginx/mongo-ui.conf           ← lo que se monta. Commiteado con el prefijo VACÍO (= local)
 ```
 
-Para DevX se regenera con el prefijo dentro:
+**No hace falta generarlo a mano**: [`up.sh`](up.sh) lo hace y levanta el stack.
+
+```bash
+./deploy-mongo/up.sh
+```
+
+Coge el prefijo, por orden, de la variable `MONGO_UI_BASE_PATH` o de `deploy-mongo/.env.devx`
+si existe; si no hay ninguno, genera la versión sin prefijo (local). También vale forzarlo:
+
+```bash
+MONGO_UI_BASE_PATH=/user/j31399/http/8082 ./deploy-mongo/up.sh
+```
+
+Imprime con qué prefijo generó el fichero y cuántas líneas lo llevan (deben ser 7), y aborta
+si la sustitución no hizo nada. Detecta solo si usar `docker compose` o `podman-compose`.
+
+El script corre en el **host**, no dentro del contenedor: por eso no le afectan ni la
+expansión del `$` del compose de turno, ni que la imagen tenga o no `envsubst`, ni los finales
+de línea. A mano sería:
 
 ```bash
 cd deploy-mongo/nginx
 sed 's|${MONGO_UI_BASE_PATH}|/user/<usuario>/http/8082|g' default.conf.template > mongo-ui.conf
-docker compose -f ../docker-compose.yaml up -d --force-recreate mongo-ui-proxy
 ```
 
-Y para volver a local, lo mismo sustituyendo por cadena vacía:
-`sed 's|${MONGO_UI_BASE_PATH}||g' …`.
+Ojo con las comillas si lo haces así: **simples**. Con dobles, la shell expande
+`${MONGO_UI_BASE_PATH}` antes de que `sed` lo vea, el patrón queda vacío y el fichero sale sin
+reescrituras — el síntoma es exactamente "la UI carga sin estilos".
 
 Se descartaron las dos alternativas que generan la config sola, y por motivos vividos: el
 `command:` en el YAML obliga a escribir el dólar como `$$`, y el `docker compose` de DevX no
