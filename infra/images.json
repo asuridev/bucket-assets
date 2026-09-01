@@ -1,0 +1,9 @@
+{
+  "redis": "redis:7-alpine",
+  "redis-commander": "ghcr.io/joeferner/redis-commander:0.9.1",
+  "mongo": "bitnami/mongodb:latest",
+  "mongo-express": "mongo-express:1.0.2-20-alpine3.19",
+  "nginx": "bitnami/nginx:latest",
+  "minio": "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+  "mc": "minio/mc:RELEASE.2025-04-16T18-13-26Z"
+}

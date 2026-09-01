@@ -15,3 +15,8 @@ deploy/.env.devx
 
 # Entorno real de DevX del stack de Mongo: lleva credenciales.
 deploy-mongo/.env.devx
+
+# Stack a la carta de infra/: entorno y ficheros generados.
+infra/.env
+infra/generated/
+infra/conf/mongo-ui.conf

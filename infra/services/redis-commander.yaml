@@ -1,0 +1,17 @@
+  # UI de Redis. Sirve en la raiz con assets relativos, asi que en DevX funciona sin nada mas:
+  # URL_PREFIX va VACIO porque el proxy recorta el prefijo antes de reenviar.
+  redis-commander:
+    image: __IMAGE_REDIS_COMMANDER__
+    container_name: infra-redis-commander
+    # Solo orden de arranque, NO `condition: service_healthy`: si el healthcheck falla en este
+    # entorno, la UI no llegaria a levantar nunca.
+    depends_on:
+      - redis
+    environment:
+      # Por NOMBRE DE SERVICIO, no localhost.
+      REDIS_HOSTS: local:redis:6379
+      URL_PREFIX: ""
+      HTTP_USER: admin
+      HTTP_PASSWORD: admin
+    ports:
+      - "8081:8081"

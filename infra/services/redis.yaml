@@ -1,0 +1,12 @@
+  redis:
+    image: __IMAGE_REDIS__
+    container_name: infra-redis
+    ports:
+      # Literal, sin ${VAR:-default}: el compose de DevX no sustituye dentro de `ports` y
+      # parte el string por ":", con lo que revienta al arrancar.
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

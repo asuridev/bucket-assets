@@ -1,0 +1,20 @@
+  mongo:
+    image: __IMAGE_MONGO__
+    container_name: infra-mongo
+    environment:
+      # Variables de Bitnami, no las MONGO_INITDB_* de la imagen oficial.
+      MONGODB_ROOT_USER: admin
+      MONGODB_ROOT_PASSWORD: admin
+    ports:
+      - "27017:27017"
+    volumes:
+      # Bitnami guarda los datos aqui, no en /data/db.
+      - mongo-data:/bitnami/mongodb
+    healthcheck:
+      # Ruta absoluta a mongosh: el PATH que ve el healthcheck depende de la variante de
+      # imagen, y si no lo encuentra el contenedor se queda "unhealthy" para siempre.
+      test: ["CMD-SHELL", "/opt/bitnami/mongodb/bin/mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 40s

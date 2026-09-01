@@ -1,0 +1,14 @@
+  # UI de Mongo. No publica puerto: solo la alcanza el nginx de mongo-ui-proxy por la red
+  # interna, que es quien reescribe el HTML para el subpath de DevX.
+  mongo-express:
+    image: __IMAGE_MONGO_EXPRESS__
+    container_name: infra-mongo-express
+    depends_on:
+      - mongo
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://admin:admin@mongo:27017/?authSource=admin
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+      ME_CONFIG_SITE_COOKIESECRET: infra
+      ME_CONFIG_SITE_SESSIONSECRET: infra

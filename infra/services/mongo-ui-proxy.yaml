@@ -1,0 +1,14 @@
+  # El shim. mongo-express pide sus assets con rutas ABSOLUTAS (/public/...) y DevX recorta el
+  # prefijo, asi que sin reescribir el HTML la pagina sale sin estilos. up.sh genera
+  # conf/mongo-ui.conf con el prefijo dentro y aqui solo se monta: sin command:, sin envsubst
+  # y sin scripts, que es lo unico que no depende de las rarezas del compose de turno.
+  mongo-ui-proxy:
+    image: __IMAGE_NGINX__
+    container_name: infra-mongo-ui-proxy
+    depends_on:
+      - mongo-express
+    volumes:
+      # Ruta relativa al fichero compose, que vive en infra/generated/.
+      - ../conf/mongo-ui.conf:/opt/bitnami/nginx/conf/server_blocks/mongo-ui.conf:ro
+    ports:
+      - "8082:8082"

@@ -1,0 +1,21 @@
+  minio:
+    image: __IMAGE_MINIO__
+    container_name: infra-minio
+    command: server /data --console-address ":9001"
+    environment:
+      # MinIO exige 8 caracteres minimo en la contrasena: es la unica UI que no puede ser
+      # admin/admin.
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: adminadmin
+      # URL publica de la consola. Sin esto redirige a localhost y no carga desde DevX.
+      MINIO_BROWSER_REDIRECT_URL: __MINIO_PUBLIC_URL__
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
