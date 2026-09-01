@@ -3,6 +3,11 @@
     container_name: infra-mongo
     environment:
       # Variables de Bitnami, no las MONGO_INITDB_* de la imagen oficial.
+      #
+      # OJO: Bitnami solo aplica esto en la PRIMERA inicializacion, con el directorio de
+      # datos vacio. Si el volumen mongo-data ya existe (creado por una version anterior
+      # de este stack), el usuario root NO se crea y estas dos variables no hacen nada.
+      # Por eso el usuario lo garantiza aparte el servicio mongo-init.
       MONGODB_ROOT_USER: admin
       MONGODB_ROOT_PASSWORD: admin
     ports:
@@ -11,9 +16,25 @@
       # Bitnami guarda los datos aqui, no en /data/db.
       - mongo-data:/bitnami/mongodb
     healthcheck:
-      # Ruta absoluta a mongosh: el PATH que ve el healthcheck depende de la variante de
-      # imagen, y si no lo encuentra el contenedor se queda "unhealthy" para siempre.
-      test: ["CMD-SHELL", "/opt/bitnami/mongodb/bin/mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
+      # Cuatro intentos encadenados en vez de una sola ruta a mongosh, por dos motivos
+      # distintos que se suman:
+      #
+      #   - La SHELL depende de la version del servidor: MongoDB 4.4 no trae `mongosh`,
+      #     solo el `mongo` legacy. Y aqui la version no se elige: images.json pide
+      #     `bitnami/mongodb:latest`, y el registro corporativo de DevX resuelve ese tag
+      #     a 4.4.26 mientras que contra Docker Hub sale una 8.x.
+      #   - El PATH que ve el healthcheck depende de la variante de imagen, de ahi que se
+      #     pruebe primero la ruta absoluta de Bitnami y luego el nombre pelado.
+      #
+      # Con la ruta fija a mongosh que habia antes, en DevX el contenedor se quedaba
+      # `unhealthy` para siempre, y eso bloquea cualquier `condition: service_healthy`.
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/bitnami/mongodb/bin/mongosh --quiet --eval "db.adminCommand('ping').ok" ||
+          /opt/bitnami/mongodb/bin/mongo --quiet --eval "db.adminCommand('ping').ok" ||
+          mongosh --quiet --eval "db.adminCommand('ping').ok" ||
+          mongo --quiet --eval "db.adminCommand('ping').ok"
       interval: 5s
       timeout: 10s
       retries: 20

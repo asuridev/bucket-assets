@@ -1,3 +1,8 @@
 # Los .sh se montan dentro de contenedores Linux: con CRLF, sh falla con un
 # "not found" indescifrable. Fuerza LF pase lo que pase en el checkout de Windows.
 *.sh text eol=lf
+
+# Mismo motivo: infra/services/mongo-init.yaml lleva un script de shell embebido en un
+# bloque literal de YAML, y ese texto llega tal cual al contenedor. Con CRLF, el heredoc
+# y el `for` de dentro se rompen igual que un .sh mal convertido.
+infra/services/*.yaml text eol=lf

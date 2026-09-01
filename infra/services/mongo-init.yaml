@@ -1,0 +1,94 @@
+  # Contenedor de un solo uso: garantiza que existe el usuario admin/admin sobre la base
+  # `admin`. Es idempotente y acaba en Exited (0), igual que minio-init.
+  #
+  # Hace falta porque la imagen NO siempre lo crea: Bitnami solo ejecuta su inicializacion
+  # la primera vez, con el directorio de datos vacio. Sobre un volumen mongo-data que ya
+  # existia, `db.getUsers()` devuelve [] y la URI admin:admin@mongo:27017/?authSource=admin
+  # que usan mongo-express y el resto del equipo no autentica. Hasta ahora se arreglaba a
+  # mano, entrando al contenedor a lanzar el createUser.
+  mongo-init:
+    # La MISMA imagen que el servicio mongo: no hay que anadir una clave a images.json ni
+    # pedirle otra imagen al registro de DevX, y la shell disponible es por construccion la
+    # que corresponde a la version del servidor.
+    image: __IMAGE_MONGO__
+    container_name: infra-mongo-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # LA LINEA CLAVE. Con la autorizacion activada y cero usuarios creados, la unica forma
+    # de crear el primero es la *localhost exception*, que mongod solo concede a conexiones
+    # que llegan por loopback. Un sidecar normal entra por la red del compose, con IP de
+    # red, y seria rechazado. Compartiendo el namespace de red del contenedor mongo, este
+    # init habla a 127.0.0.1:27017 y si queda cubierto por la excepcion.
+    #
+    # Consecuencia: aqui no se publica ningun puerto y NO se conecta por el nombre de
+    # servicio `mongo`, que en este namespace no resuelve a nada util.
+    #
+    # Si el compose de turno rechazara esta clave, la salida manual esta en el README
+    # (tabla "Si algo falla"): un `docker exec` al contenedor mongo con el mismo
+    # createUser, que por venir de dentro tambien entra por loopback.
+    network_mode: "service:mongo"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+
+        cat > /tmp/ensure-admin.js <<'JS'
+        // Idempotente: si admin/admin ya autentica, no toca nada.
+        //
+        // La comprobacion es intentar autenticar, y la shell legacy de 4.4 escupe un
+        // "Error: Authentication failed." antes de devolver el control. Es ESPERADO la
+        // primera vez y no rompe nada; se avisa aqui para que nadie lo lea como un fallo.
+        print("mongo-init: comprobando si el usuario admin ya existe...");
+        var admin = db.getSiblingDB("admin");
+        var yaExiste = false;
+        try {
+          // db.auth NO devuelve lo mismo en las dos shells: el `mongo` de 4.4 devuelve 1
+          // y mongosh devuelve { ok: 1 }. Comparar solo contra 1 hacia creer a mongosh que
+          // el usuario no existia, y el createUser siguiente moria con "already exists".
+          var resultado = admin.auth("admin", "admin");
+          yaExiste = resultado === 1 || resultado === true
+              || (resultado != null && resultado.ok === 1);
+        } catch (e) {
+          // mongosh lanza MongoServerError si la autenticacion falla; la shell legacy no.
+          yaExiste = false;
+        }
+        if (yaExiste) {
+          print("mongo-init: el usuario admin ya existe, nada que hacer");
+        } else {
+          try {
+            admin.createUser({
+              user: "admin",
+              pwd: "admin",
+              roles: [ { role: "root", db: "admin" } ]
+            });
+            print("mongo-init: usuario admin creado con rol root sobre admin");
+          } catch (e) {
+            // Caso tipico: el usuario existe con OTRA contrasena. No se toca: reescribirla
+            // a ciegas romperia a quien ya la estuviera usando.
+            print("mongo-init: ERROR al crear el usuario admin: " + e);
+            quit(1);
+          }
+        }
+        JS
+
+        # Espera activa ademas del depends_on: el healthcheck puede darlo por sano justo
+        # cuando mongod acaba de abrir el puerto.
+        for intento in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+          /opt/bitnami/mongodb/bin/mongosh --quiet 127.0.0.1:27017/admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1 && break
+          /opt/bitnami/mongodb/bin/mongo   --quiet 127.0.0.1:27017/admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1 && break
+          mongosh --quiet 127.0.0.1:27017/admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1 && break
+          mongo   --quiet 127.0.0.1:27017/admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1 && break
+          echo "mongo-init: mongod todavia no responde, reintento en 2s"
+          sleep 2
+        done
+
+        # Mismo encadenado que el healthcheck de mongo.yaml, y por lo mismo: en 4.4 no hay
+        # mongosh. Los stderr de las que no existen se tiran; lo que dice el script sale
+        # por stdout. Si la que si existe falla de verdad, ninguna rama devuelve 0 y el
+        # contenedor termina en error, que es lo que se quiere ver en `docker ps`.
+        /opt/bitnami/mongodb/bin/mongosh --quiet 127.0.0.1:27017/admin /tmp/ensure-admin.js 2>/dev/null ||
+        /opt/bitnami/mongodb/bin/mongo   --quiet 127.0.0.1:27017/admin /tmp/ensure-admin.js 2>/dev/null ||
+        mongosh --quiet 127.0.0.1:27017/admin /tmp/ensure-admin.js 2>/dev/null ||
+        mongo   --quiet 127.0.0.1:27017/admin /tmp/ensure-admin.js

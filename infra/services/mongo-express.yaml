@@ -5,6 +5,13 @@
     container_name: infra-mongo-express
     depends_on:
       - mongo
+      # Solo orden de arranque: si el usuario aun no esta creado cuando mongo-express
+      # intenta conectar, se muere. De eso se encarga el restart de abajo.
+      - mongo-init
+    # mongo-express aborta si la primera conexion no autentica, y no reintenta por su
+    # cuenta. Sin esto se queda caido aunque mongo-init cree el usuario medio segundo
+    # despues.
+    restart: unless-stopped
     environment:
       ME_CONFIG_MONGODB_URL: mongodb://admin:admin@mongo:27017/?authSource=admin
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
