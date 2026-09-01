@@ -36,11 +36,22 @@
 
         cat > /tmp/ensure-admin.js <<'JS'
         // Idempotente: si admin/admin ya autentica, no toca nada.
+        //
+        // La comprobacion es intentar autenticar, y la shell legacy de 4.4 escupe un
+        // "Error: Authentication failed." antes de devolver el control. Es ESPERADO la
+        // primera vez y no rompe nada; se avisa aqui para que nadie lo lea como un fallo.
+        print("mongo-init: comprobando si el usuario admin ya existe...");
         var admin = db.getSiblingDB("admin");
         var yaExiste = false;
         try {
-          yaExiste = admin.auth("admin", "admin") == 1;
+          // db.auth NO devuelve lo mismo en las dos shells: el `mongo` de 4.4 devuelve 1
+          // y mongosh devuelve { ok: 1 }. Comparar solo contra 1 hacia creer a mongosh que
+          // el usuario no existia, y el createUser siguiente moria con "already exists".
+          var resultado = admin.auth("admin", "admin");
+          yaExiste = resultado === 1 || resultado === true
+              || (resultado != null && resultado.ok === 1);
         } catch (e) {
+          // mongosh lanza MongoServerError si la autenticacion falla; la shell legacy no.
           yaExiste = false;
         }
         if (yaExiste) {

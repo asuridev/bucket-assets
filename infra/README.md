@@ -84,6 +84,20 @@ tanto el healthcheck de `mongo.yaml` como el init prueban las dos, y en las dos 
 (`/opt/bitnami/mongodb/bin/` y el `PATH`). Cualquier comando nuevo que se añada aquí tiene que
 hacer lo mismo, o funcionará en una máquina y no en la otra.
 
+Y no basta con elegir bien el binario: **las dos shells no devuelven lo mismo**. `db.auth()` da `1`
+en el `mongo` de 4.4 y `{ ok: 1 }` en `mongosh`, así que cualquier script que compare el resultado
+tiene que aceptar las dos formas. `mongo-init` ya lo hace, y está comentado en el fragmento.
+
+Para reproducir en local la versión de DevX sin depender del mirror, la imagen oficial sí tiene
+tag fijo:
+
+```bash
+podman run -d --name t-mongo docker.io/library/mongo:4.4.26 --auth
+```
+
+Arrancada así queda en el mismo estado que el Mongo de DevX: autorización activada y **cero
+usuarios**, que es justo el caso que cubre `mongo-init`.
+
 ## Por qué cada UI necesita algo distinto
 
 DevX publica cada puerto como subpath y **recorta el prefijo** antes de reenviar al contenedor
@@ -109,3 +123,4 @@ forma:
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck usa una shell que esa imagen no tiene (4.4 no trae `mongosh`) | Ya contemplado: el test prueba `mongosh` y `mongo`. Si vuelve a pasar, mirar `docker inspect infra-mongo --format '{{json .State.Health}}'` |
 | mongo-express o la app dan **`Authentication failed`** | `mongo-init` no llegó a crear el usuario `admin` | `docker logs infra-mongo-init`. Salida de emergencia, a mano: `docker exec -it infra-mongo mongo` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
 | `infra-mongo-init` termina con código distinto de 0 | Suele ser un `admin` que ya existe con OTRA contraseña: el init no la pisa a propósito | `docker logs infra-mongo-init` para ver el error, y o se usa esa contraseña o se empieza limpio con `./down.sh -v` |
+| `infra-mongo-init` escribe `Error: Authentication failed.` | **Es normal la primera vez**: el init comprueba si `admin` existe intentando autenticar, y la shell legacy de 4.4 imprime eso antes de devolver el control | Nada. Lo que importa es la línea siguiente (`usuario admin creado...`) y que el contenedor acabe en `Exited (0)` |
