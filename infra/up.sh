@@ -148,6 +148,9 @@ if has redis; then
 fi
 if has mongo; then
   render mongo.yaml
+  # Justo detras de mongo.yaml y ANTES de las UIs: mongo-init crea el usuario admin, y
+  # mongo-express no puede autenticar hasta que exista.
+  render mongo-init.yaml
   render mongo-express.yaml
   render mongo-ui-proxy.yaml
   VOLUMES="$VOLUMES mongo-data"
@@ -199,6 +202,43 @@ echo
 # lo que up.sh creo.
 $COMPOSE -p infra -f "$COMPOSE_FILE" up -d
 
+# --- mongo-init -----------------------------------------------------------------------
+# mongo-init es de un solo uso y `up -d` no espera a que acabe. Si falla, el resumen de
+# abajo estaria anunciando una URI (admin:admin@...) que no autentica, y el siguiente en
+# enterarse seria quien arranque el servicio. Asi que se comprueba aqui.
+if has mongo; then
+  ENGINE=docker
+  [ "$COMPOSE" = "podman-compose" ] && ENGINE=podman
+
+  echo
+  printf 'Esperando a mongo-init (es quien crea el usuario admin de MongoDB)'
+  STATE=""
+  for intento in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    STATE=$($ENGINE inspect -f '{{.State.Status}}:{{.State.ExitCode}}' infra-mongo-init 2>/dev/null || echo "")
+    case "$STATE" in
+      exited:0) break ;;
+      exited:*) break ;;
+      *) printf '.'; sleep 2 ;;
+    esac
+  done
+  echo
+
+  case "$STATE" in
+    exited:0)
+      echo "  mongo-init OK: el usuario admin de MongoDB existe."
+      ;;
+    exited:*)
+      echo "  ERROR: mongo-init termino en fallo ($STATE)." >&2
+      echo "  Sin el usuario admin, la URI de MongoDB de aqui abajo NO autentica." >&2
+      echo "  Mira que paso:  $ENGINE logs infra-mongo-init" >&2
+      ;;
+    *)
+      echo "  AVISO: mongo-init sigue sin terminar (estado: '${STATE:-desconocido}')." >&2
+      echo "  Comprueba con:  $ENGINE logs infra-mongo-init" >&2
+      ;;
+  esac
+fi
+
 # --- resumen --------------------------------------------------------------------------
 echo
 echo "============================================================================"
@@ -222,6 +262,10 @@ has minio && echo "   MinIO    http://localhost:9000"
 echo
 echo " MinIO es la unica excepcion a admin/admin: rechaza contrasenas de menos de 8"
 echo " caracteres, por eso es adminadmin."
+has mongo && echo
+has mongo && echo " El admin/admin de MongoDB lo crea el contenedor mongo-init, no la imagen: Bitnami"
+has mongo && echo " solo lo creara sobre un volumen vacio, y sobre uno ya existente la base admin se"
+has mongo && echo " quedaria sin ningun usuario."
 echo
 echo " Para bajarlo:  ./down.sh        (los datos sobreviven)"
 echo "                ./down.sh -v     (borra tambien los volumenes)"

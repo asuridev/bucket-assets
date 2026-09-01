@@ -88,6 +88,20 @@ Y no basta con elegir bien el binario: **las dos shells no devuelven lo mismo**.
 en el `mongo` de 4.4 y `{ ok: 1 }` en `mongosh`, así que cualquier script que compare el resultado
 tiene que aceptar las dos formas. `mongo-init` ya lo hace, y está comentado en el fragmento.
 
+## Dos cosas que `mongo-init` da por sentadas (y por qué)
+
+**`condition: service_healthy` no siempre se respeta.** `docker compose` lo cumple; **podman-compose
+lo ignora** y arranca `mongo-init` a la vez que `mongod`. Por eso el init no confía en el
+`depends_on`: reintenta hasta 30 veces cada 4 s, y si se agotan sale con código distinto de 0 en
+lugar de fingir que fue bien.
+
+**Lo que se reintenta es el trabajo, no un ping previo.** Bitnami levanta un `mongod` **temporal**
+para inicializar y luego lo reinicia. Una primera versión esperaba con un ping y después lanzaba el
+script una sola vez: el ping pasaba contra el `mongod` temporal y, cuando le tocaba al script,
+`mongod` estaba reiniciándose y la conexión moría. Reintentando el script entero —que es
+idempotente— esa ventana deja de importar. Se ve en los logs de un arranque en frío: un primer
+intento fallido y el segundo en verde.
+
 Para reproducir en local la versión de DevX sin depender del mirror, la imagen oficial sí tiene
 tag fijo:
 
@@ -123,4 +137,4 @@ forma:
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck usa una shell que esa imagen no tiene (4.4 no trae `mongosh`) | Ya contemplado: el test prueba `mongosh` y `mongo`. Si vuelve a pasar, mirar `docker inspect infra-mongo --format '{{json .State.Health}}'` |
 | mongo-express o la app dan **`Authentication failed`** | `mongo-init` no llegó a crear el usuario `admin` | `docker logs infra-mongo-init`. Salida de emergencia, a mano: `docker exec -it infra-mongo mongo` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
 | `infra-mongo-init` termina con código distinto de 0 | Suele ser un `admin` que ya existe con OTRA contraseña: el init no la pisa a propósito | `docker logs infra-mongo-init` para ver el error, y o se usa esa contraseña o se empieza limpio con `./down.sh -v` |
-| `infra-mongo-init` escribe `Error: Authentication failed.` | **Es normal la primera vez**: el init comprueba si `admin` existe intentando autenticar, y la shell legacy de 4.4 imprime eso antes de devolver el control | Nada. Lo que importa es la línea siguiente (`usuario admin creado...`) y que el contenedor acabe en `Exited (0)` |
+| `infra-mongo-init` escribe `Error: Authentication failed.` o un `ERROR ... requires authentication` en el primer intento | **Es normal**: el init comprueba si `admin` existe intentando autenticar (la shell legacy de 4.4 imprime eso antes de devolver el control), y en un arranque en frío el primer intento puede pillar a `mongod` reiniciándose | Nada. Lo que importa es la última línea (`usuario admin creado...` o `ya existe`) y que el contenedor acabe en `Exited (0)` |
