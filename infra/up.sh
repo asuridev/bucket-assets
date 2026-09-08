@@ -3,9 +3,10 @@
 # el prefijo del subpath (/user/<usuario>/http/<puerto>) con el que ese entorno publica cada
 # puerto por HTTP.
 #
-#   ./up.sh                  menu interactivo
-#   ./up.sh redis mongo      directo
-#   ./up.sh --dry-run all    solo genera el compose, no levanta
+#   ./up.sh                          menu interactivo
+#   ./up.sh redis mongo              directo
+#   ./up.sh ibm-secret-manager       solo la emulacion de Secrets Manager
+#   ./up.sh --dry-run all            solo genera el compose, no levanta
 #
 # Todas las imagenes salen de images.json, sin excepcion.
 set -e
@@ -16,6 +17,16 @@ ENV_FILE=.env
 IMAGES=images.json
 COMPOSE_FILE=generated/docker-compose.yaml
 NGINX_CONF=conf/mongo-ui.conf
+STUB_DIR=conf/secrets-manager-stub
+STUB_TEMPLATE=$STUB_DIR/secret-kv.json.template
+STUB_SECRET=$STUB_DIR/mappings/secret-kv.json
+
+# Credenciales de MinIO, en UN solo sitio. up.sh las sustituye en services/minio.yaml,
+# services/minio-init.yaml y en la plantilla del secreto que consume el stub de Secrets
+# Manager. Escritas a mano en los tres, cambiar una sola dejaria al servicio firmando con
+# unas credenciales y a MinIO esperando otras: un 503 al subir, y sin mas pista.
+MINIO_USER=admin
+MINIO_PASSWORD=adminadmin   # MinIO rechaza contrasenas de menos de 8 caracteres
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -61,9 +72,9 @@ SELECTION=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=yes ;;
-    redis|mongo|minio) SELECTION="$SELECTION $arg" ;;
-    all) SELECTION="redis mongo minio" ;;
-    -h|--help) echo "Uso: $0 [--dry-run] [redis] [mongo] [minio] | all"; exit 0 ;;
+    redis|mongo|minio|ibm-secret-manager) SELECTION="$SELECTION $arg" ;;
+    all) SELECTION="redis mongo minio ibm-secret-manager" ;;
+    -h|--help) echo "Uso: $0 [--dry-run] [redis] [mongo] [minio] [ibm-secret-manager] | all"; exit 0 ;;
     *) die "opcion desconocida: $arg" ;;
   esac
 done
@@ -74,6 +85,7 @@ if [ -z "$SELECTION" ]; then
   echo "  1) redis   -> Redis Commander en el 8081"
   echo "  2) mongo   -> mongo-express en el 8082 (con su nginx delante)"
   echo "  3) minio   -> consola de MinIO en el 9001"
+  echo "  4) ibm-secret-manager -> emulacion de Secrets Manager en el 8090 (no es una UI)"
   printf "Elige (ej: 1,3  o  all): "
   read -r ANSWER || ANSWER=""
   for item in $(echo "$ANSWER" | tr ',' ' '); do
@@ -81,7 +93,8 @@ if [ -z "$SELECTION" ]; then
       1|redis) SELECTION="$SELECTION redis" ;;
       2|mongo) SELECTION="$SELECTION mongo" ;;
       3|minio) SELECTION="$SELECTION minio" ;;
-      all) SELECTION="redis mongo minio" ;;
+      4|ibm-secret-manager) SELECTION="$SELECTION ibm-secret-manager" ;;
+      all) SELECTION="redis mongo minio ibm-secret-manager" ;;
       "") ;;
       *) die "opcion no valida: $item" ;;
     esac
@@ -116,6 +129,9 @@ if has minio; then
   IMG_MINIO=$(image_of minio)
   IMG_MC=$(image_of mc)
 fi
+if has ibm-secret-manager; then
+  IMG_WIREMOCK=$(image_of wiremock)
+fi
 
 # --- ensamblado -----------------------------------------------------------------------
 mkdir -p generated
@@ -135,7 +151,10 @@ render() {
     -e "s|__IMAGE_NGINX__|$IMG_NGINX|g" \
     -e "s|__IMAGE_MINIO__|$IMG_MINIO|g" \
     -e "s|__IMAGE_MC__|$IMG_MC|g" \
+    -e "s|__IMAGE_WIREMOCK__|$IMG_WIREMOCK|g" \
     -e "s|__MINIO_PUBLIC_URL__|$(url_for 9001)|g" \
+    -e "s|__MINIO_USER__|$MINIO_USER|g" \
+    -e "s|__MINIO_PASSWORD__|$MINIO_PASSWORD|g" \
     -e "s|__BUCKET__|$BUCKET|g" \
     "services/$1" >> "$COMPOSE_FILE"
   echo >> "$COMPOSE_FILE"
@@ -158,6 +177,10 @@ if has minio; then
   render minio-init.yaml
   VOLUMES="$VOLUMES minio-data"
 fi
+if has ibm-secret-manager; then
+  # Sin volumen a proposito: un stub no tiene estado que preservar.
+  render secrets-manager-stub.yaml
+fi
 
 if [ -n "$VOLUMES" ]; then
   echo "volumes:" >> "$COMPOSE_FILE"
@@ -177,6 +200,27 @@ if has mongo; then
   COUNT=$(grep -c -- "$PREFIX" "$NGINX_CONF" || true)
   [ "$COUNT" -gt 0 ] || die "la sustitucion del prefijo en $NGINX_CONF no hizo nada"
   echo "Config de nginx generada con prefijo $PREFIX ($COUNT lineas)"
+fi
+
+# --- secreto que sirve el stub de Secrets Manager -----------------------------------
+# Se genera, no se commitea: lleva dentro las credenciales de MinIO, y tienen que ser las de
+# ESTE stack (admin/adminadmin), no las del compose de deploy/ (minioadmin). El servicio las
+# usa de verdad en el perfil local, asi que un valor equivocado no es cosmetico: la subida
+# falla con 503.
+if has ibm-secret-manager; then
+  [ -f "$STUB_TEMPLATE" ] || die "no encuentro $STUB_TEMPLATE"
+  mkdir -p "$STUB_DIR/mappings"
+  sed -e "s|__MINIO_USER__|$MINIO_USER|g" \
+      -e "s|__MINIO_PASSWORD__|$MINIO_PASSWORD|g" \
+      "$STUB_TEMPLATE" > "$STUB_SECRET"
+  # Misma comprobacion que la del nginx: si la sustitucion no ocurrio, el stub serviria
+  # marcadores literales y el fallo se veria mucho mas tarde, al subir un archivo.
+  # En forma de `if` y no `grep ... && die`: un AND-OR list cuyo lado izquierdo falla se
+  # comporta distinto segun la shell, y aqui no sabemos cual corre en DevX.
+  if grep -q "__MINIO_" "$STUB_SECRET"; then
+    die "quedaron marcadores sin sustituir en $STUB_SECRET"
+  fi
+  echo "Secreto del stub generado en infra/$STUB_SECRET (MinIO: $MINIO_USER)"
 fi
 
 if [ "$DRY_RUN" = yes ]; then
@@ -209,12 +253,19 @@ echo
 echo " UIs -- recuerda hacer \"Add Port\" en el panel PORTS de la IDE"
 has redis && printf '   Redis Commander  %-56s admin / admin\n' "$(url_for 8081)"
 has mongo && printf '   mongo-express    %-56s admin / admin\n' "$(url_for 8082)"
-has minio && printf '   MinIO consola    %-56s admin / adminadmin\n' "$(url_for 9001)"
+has minio && printf '   MinIO consola    %-56s %s / %s\n' "$(url_for 9001)" "$MINIO_USER" "$MINIO_PASSWORD"
 echo
+if has ibm-secret-manager; then
+  echo " Emulacion de IBM Cloud Secrets Manager   http://localhost:8090"
+  echo "   NO es una UI y NO necesita Add Port: la consume la aplicacion, no el navegador."
+  echo "   El perfil 'local' ya apunta ahi por defecto, asi que no hay que exportar nada."
+  echo "   Valores del secreto: infra/$STUB_SECRET (se regenera en cada ./up.sh)"
+  echo
+fi
 echo " Conexiones desde OTRO CONTENEDOR de este compose (por nombre de servicio)"
 has redis && echo "   Redis    redis:6379                                   sin auth"
 has mongo && echo "   MongoDB  mongodb://admin:admin@mongo:27017/?authSource=admin"
-has minio && echo "   MinIO    http://minio:9000   admin / adminadmin   bucket: $BUCKET"
+has minio && echo "   MinIO    http://minio:9000   $MINIO_USER / $MINIO_PASSWORD   bucket: $BUCKET"
 echo
 echo " Conexiones desde el propio workspace (puertos publicados)"
 has redis && echo "   Redis    localhost:6379"

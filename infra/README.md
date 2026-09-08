@@ -4,15 +4,20 @@ Un solo comando que pregunta qué necesitas, arma el `docker-compose.yaml` con *
 levanta y termina imprimiendo credenciales y URLs.
 
 ```bash
-./up.sh                  # menú interactivo
-./up.sh redis mongo      # directo
-./up.sh --dry-run all    # solo genera el compose, para revisarlo
-./down.sh                # baja el stack (los datos sobreviven)
-./down.sh -v             # baja y borra los volúmenes (pide confirmación)
+./up.sh                        # menú interactivo
+./up.sh redis mongo            # directo
+./up.sh ibm-secret-manager     # solo la emulación de Secrets Manager
+./up.sh --dry-run all          # solo genera el compose, para revisarlo
+./down.sh                      # baja el stack (los datos sobreviven)
+./down.sh -v                   # baja y borra los volúmenes (pide confirmación)
 ```
 
-Cada servicio arrastra su UI automáticamente: **redis** → Redis Commander, **mongo** →
-mongo-express (con su nginx delante), **minio** → creación del bucket, que se pregunta al vuelo.
+Cada servicio arrastra lo suyo automáticamente: **redis** → Redis Commander, **mongo** →
+mongo-express (con su nginx delante), **minio** → creación del bucket, que se pregunta al vuelo,
+**ibm-secret-manager** → un WireMock que emula IBM Cloud Secrets Manager, con su secreto
+generado a medida de este stack.
+
+`all` es los cuatro.
 
 > Está pensado **solo para DevX**: siempre resuelve el prefijo `/user/<usuario>/http/<puerto>`
 > con el que ese entorno publica cada puerto. Para trabajar en local están `deploy/` y
@@ -28,6 +33,7 @@ mongo-express (con su nginx delante), **minio** → creación del bucket, que se
 | mongo-express (UI) | 8082 | `admin` / `admin` |
 | MinIO API | 9000 | `admin` / `adminadmin` |
 | MinIO consola (UI) | 9001 | `admin` / `adminadmin` |
+| Emulación de Secrets Manager | 8090 | sin auth — **no es una UI** |
 
 **MinIO es la única excepción a `admin`/`admin`**: rechaza arrancar con una contraseña de menos
 de 8 caracteres.
@@ -43,6 +49,11 @@ limpio con `./down.sh -v`.
 Tras levantar, hay que hacer ***Add Port*** en el panel PORTS de la IDE con cada puerto de UI
 (8081, 8082, 9001). Sin eso no hay forwarded address y la URL da 502.
 
+**El 8090 es la excepción**: la emulación de Secrets Manager no la abre un navegador, la
+consume la aplicación desde el propio workspace por `localhost`. No necesita *Add Port*, y de
+hecho el perfil `local` del servicio ya apunta ahí por defecto (`SECRETS_URL`), así que no hay
+que exportar nada.
+
 ## Qué hay en el directorio
 
 ```
@@ -51,6 +62,9 @@ images.json               TODAS las imágenes. Es el único sitio donde se cambi
 services/*.yaml           Un fragmento de compose por servicio, con marcadores __IMAGE_X__.
 conf/default.conf.template  Plantilla del nginx que sirve mongo-express bajo el subpath.
 conf/mongo-ui.conf        Generada por up.sh con tu prefijo dentro. No se commitea.
+conf/secrets-manager-stub/  Los stubs de WireMock: mappings/iam-token.json y cr-token viajan
+                          tal cual; mappings/secret-kv.json lo genera up.sh desde
+                          secret-kv.json.template y NO se commitea (ver abajo).
 generated/docker-compose.yaml  Lo que up.sh arma y levanta. No se commitea.
 ```
 
@@ -113,6 +127,27 @@ forma:
   dentro (y verifica que la sustitución ocurrió; si no, aborta).
 - **MinIO** necesita `MINIO_BROWSER_REDIRECT_URL` con la URL pública completa, o la consola
   redirige a `localhost`.
+- **La emulación de Secrets Manager no es una UI** y por eso no necesita nada de esto: la
+  consume la aplicación por `localhost:8090`, no un navegador a través del proxy.
+
+## El secreto del stub se genera, no se commitea
+
+`conf/secrets-manager-stub/mappings/secret-kv.json` sale de `secret-kv.json.template` en cada
+`./up.sh`, sustituyendo las credenciales de MinIO. **No es cosmético**: el secreto lleva dentro
+`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` y son las que el servicio usa de verdad para firmar contra
+MinIO en el perfil `local`. Aquí valen `admin`/`adminadmin`, mientras que el compose de
+`deploy/` usa `minioadmin` — por eso cada entorno tiene su copia y no se comparte el fichero.
+
+Esas credenciales viven en **un solo sitio**, las variables `MINIO_USER`/`MINIO_PASSWORD` de
+`up.sh`, desde donde se sustituyen en `services/minio.yaml`, `services/minio-init.yaml` y la
+plantilla del secreto. Escritas a mano en los tres, cambiar una sola dejaría al servicio
+firmando con unas y a MinIO esperando otras.
+
+`up.sh` **aborta** si queda algún marcador `__MINIO_*__` sin sustituir, igual que hace con el
+prefijo del nginx: servir marcadores literales daría un fallo mucho más tarde y sin pista.
+
+La plantilla vive **fuera** de `mappings/` a propósito: WireMock aborta el arranque si encuentra
+ahí un fichero que no sepa parsear.
 
 ## Si algo falla
 
@@ -122,6 +157,9 @@ forma:
 | mongo-express carga **sin estilos** | El prefijo de `conf/mongo-ui.conf` no coincide con la URL | Volver a lanzar `./up.sh mongo`: lo regenera desde `.env` |
 | Las URLs del resumen llevan otro usuario | `infra/.env` tiene un `DEVX_USER` equivocado | Editarlo y relanzar `./up.sh` |
 | `ERROR: la clave "X" no esta en images.json` | Falta una imagen | Añadirla a `images.json` |
+| La subida da **`503 STORAGE_UNAVAILABLE`** con el stack de infra | El `secret-kv.json` generado no coincide con las credenciales de MinIO | Relanzar `./up.sh ibm-secret-manager`: lo regenera. Comprobar con `grep MINIO conf/secrets-manager-stub/mappings/secret-kv.json` |
+| La app no arranca: `No se pudo leer el secreto ...` | El stub no está levantado, o el 8090 lo ocupa otro compose | `docker ps`; parar el otro stack, o arrancar con `SECRETS_ENABLED=false` |
+| El stub arranca y muere solo | Un fichero inválido en `conf/secrets-manager-stub/mappings/` | `docker logs infra-secrets-stub`: WireMock dice qué fichero y por qué |
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck no encuentra `mongosh`, casi seguro porque el registro sirvió otra versión bajo ese tag | `docker inspect infra-mongo --format '{{json .State.Health}}'` y `docker exec infra-mongo mongosh --quiet --eval "db.version()"` |
 | mongo-express o la app dan **`Authentication failed`** | El volumen `mongo-data-v8` ya tenía datos, así que el entrypoint se saltó el init y no creó el usuario `admin` | `./down.sh -v` para empezar limpio. A mano: `docker exec -it infra-mongo mongosh` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
 | `infra-mongo` sale con **exit 1** nada más arrancar | Solo está definida una de `MONGO_INITDB_ROOT_USERNAME`/`_PASSWORD`: el entrypoint aborta a propósito en vez de arrancar sin autorización | Revisar `services/mongo.yaml`: las dos o ninguna |

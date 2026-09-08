@@ -4,9 +4,11 @@
     command: server /data --console-address ":9001"
     environment:
       # MinIO exige 8 caracteres minimo en la contrasena: es la unica UI que no puede ser
-      # admin/admin.
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: adminadmin
+      # admin/admin. El valor sale de up.sh, que lo sustituye tambien en minio-init.yaml y en
+      # la plantilla del secreto: si estuviera escrito a mano en los tres sitios, cambiar uno
+      # solo rompe la subida con un 503 dificil de diagnosticar.
+      MINIO_ROOT_USER: __MINIO_USER__
+      MINIO_ROOT_PASSWORD: __MINIO_PASSWORD__
       # URL publica de la consola. Sin esto redirige a localhost y no carga desde DevX.
       MINIO_BROWSER_REDIRECT_URL: __MINIO_PUBLIC_URL__
     ports:

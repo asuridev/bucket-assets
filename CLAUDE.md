@@ -31,7 +31,8 @@ No test suite exists yet (`src/test` is empty).
 Local infrastructure: `podman-compose -f deploy/docker-compose.yaml up -d` (prefer
 `podman-compose`, the Python one, over `podman compose` — see README §4 for why on Windows).
 It brings up MinIO (S3, auto-creating the bucket via a one-shot `minio-init` container),
-Redis (the GET cache; no volume, so every start is cold) and Redis Commander on `:8081`
+Redis (the GET cache; no volume, so every start is cold), a WireMock stub of IBM Cloud
+Secrets Manager on `:8090` (see "Secrets" below) and Redis Commander on `:8081`
 (`admin`/`admin`), a web UI over that cache — the only way to inspect it in DevX, where
 there is no `exec` and no TCP 6379, only HTTP exposed under a subpath. The public URLs of
 that environment are parameterised (`MINIO_PUBLIC_URL`, `REDIS_UI_BASE_PATH`,
@@ -62,6 +63,7 @@ infrastructure/    All Spring lives here
                     CachedFileStorage (@Primary Redis-caching decorator around it)
   configurations/   usecase/ (mediator wiring), storage/ (COS + policy config),
                     cache/ (Redis cache manager + TTL properties)
+  secrets/          SecretsEnvironmentPostProcessor + IbmSecretsManagerSource
   correlation/      CorrelationContext + CorrelationFilter
 ```
 
@@ -104,10 +106,71 @@ bytes. A cache hung off the GET handler would not see that write.
 - TTL is `cache.ttl-minutes` per profile (local 10, develop 60, production 1440) and
   `cache.enabled: false` removes the decorator entirely, restoring the pre-cache behaviour.
 
+### Secrets
+
+Credentials come from **IBM Cloud Secrets Manager** at startup, not from plain env vars.
+Full write-up in `secret-manager.md`; the parts that matter when changing code:
+
+- The seam is `SecretsEnvironmentPostProcessor`, an `EnvironmentPostProcessor` registered in
+  `META-INF/spring.factories` (EPPs still go there in Boot 3 — only autoconfigurations moved
+  to `AutoConfiguration.imports`). It fetches one `kv` secret and registers its keys as a
+  `MapPropertySource` named `ibm-secrets-manager`.
+- **The secret's keys are named exactly like the env vars the YAML already used**
+  (`COS_API_KEY`, `COS_SERVICE_INSTANCE_ID`, `REDIS_PASSWORD`), so `${COS_API_KEY}` in
+  `parameters/develop/storage.yaml` resolves on its own. `StorageProperties`, `CosConfig` and
+  every YAML are untouched and know nothing about Secrets Manager. **Adding a new secret is a
+  key in the secret plus a `${VAR}` in a YAML — no Java.** The reference project does the
+  opposite (a typed `GetCredentialsCommand` bean each consumer injects), which is more
+  explicit in a stack trace but needs code per secret.
+- Registered with `addLast()`: **a real env var wins over the secret**. Deliberate escape
+  hatch. It also means a leftover `COS_API_KEY` in a Code Engine deployment silently shadows
+  the secret.
+- **A failure here refuses to start the app**, unlike the cache, which degrades to a miss.
+  There is a durable store behind the cache; there is nothing behind missing credentials but
+  a 500 on the first request. Same stance as `CosConfig.requireConfigured`.
+- Read **once, at startup**. No refresh: rotating credentials means restarting the pod.
+- `secrets.enabled: false` skips the whole thing, restoring the pre-Secrets-Manager
+  behaviour — same pattern as `cache.enabled`.
+- An EPP runs **before the logging system exists**, so it takes a `DeferredLogFactory` in its
+  constructor; an SLF4J logger there would swallow its lines. It also binds `secrets.enabled`
+  separately and *first*, because binding the whole record would blow up on an unresolved
+  `${SECRETS_URL}` even with the feature off — which would make the escape hatch useless.
+- **Two auth modes**, switched by `secrets.auth-mode` (`apikey` | `container`) — same pattern
+  as `storage.auth-mode`, one level up. `apikey` (the default) uses `IamAuthenticator` with
+  `IBM_CLOUD_API_KEY`, the one credential that stays a plain env var. `container` uses
+  `ContainerAuthenticator`: the SDK reads the compute-resource token Code Engine mounts in the
+  pod and exchanges it against a trusted profile, so **no credential exists in the
+  deployment**. Switching is one env var and a restart — no image, no code. The default is
+  `apikey` deliberately: it is what already works, so a deployment that does nothing is
+  unaffected.
+- **No automatic fallback between modes**, on purpose. A `container`→`apikey` fallback would
+  hide a misconfigured trusted profile (the migration never completes) and make the Secrets
+  Manager audit log unattributable. A misconfigured mode refuses to start instead, naming the
+  missing property — `IbmSecretsManagerSource.requireCredentials()`.
+- `api-key` is `${IBM_CLOUD_API_KEY:}` (empty default) in develop/production: without it the
+  `Binder` would blow up on an unresolved placeholder in `container` mode, where the variable
+  must not exist. The fail-fast moved to `requireCredentials()`, which gives a better message.
+- `container` mode **is rehearsable locally**: the SDK's cr-token exchange hits the same
+  `POST /identity/token` the WireMock stub already serves, so pointing `SECRETS_CR_TOKEN_FILE`
+  at `deploy/secrets-manager-stub/cr-token` exercises the whole path. WireMock's request
+  journal (`/__admin/requests`) shows which `grant_type` was actually sent — that is the proof
+  the mode is live, not the fact that it booted.
+- Local runs the **same adapter against a different URL** — a WireMock stub in the compose
+  (`deploy/secrets-manager-stub/`) serving both `POST /identity/token` and the v2 secret path.
+  Same reasoning as MinIO vs COS. Note WireMock rejects unknown top-level fields in a mapping
+  file (`//` included): comments go in `metadata`.
+- **In local the secret is not decorative**: it carries `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`,
+  which is what `parameters/local/storage.yaml` actually signs with, so a wrong value in
+  `secret-kv.json` fails the upload with a 503 — the cheapest proof the mechanism works. The
+  `minioadmin` defaults in that YAML exist only for `SECRETS_ENABLED=false`. The `COS_*` keys
+  are in the local secret purely so its shape matches the other environments.
+- The SDK is `com.ibm.cloud:secrets-manager` + `sdk-core`, which shares **nothing** with the
+  COS SDK above: that one is an AWS-SDK-v1 fork, this one is OpenAPI-generated.
+
 ### Config layering
 
 Each profile's `application-<profile>.yaml` does nothing but `spring.config.import` fragments
-from `src/main/resources/parameters/<profile>/{logging,management,storage}.yaml`, so environment
+from `src/main/resources/parameters/<profile>/{logging,management,storage,cache,secrets}.yaml`, so environment
 diffs are reviewable concept-by-concept rather than as one flat file. Profiles: `local`
 (real SDK against local MinIO, HMAC signing, `MINIO_*` vars all defaulted), `develop`/`production`
 (IBM COS via IAM — refuse to start without `COS_ENDPOINT`, `COS_API_KEY`,

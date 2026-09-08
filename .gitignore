@@ -20,3 +20,9 @@ deploy-mongo/.env.devx
 infra/.env
 infra/generated/
 infra/conf/mongo-ui.conf
+# El secreto del stub lo genera up.sh con las credenciales de MinIO de ESTE stack.
+# La plantilla (secret-kv.json.template) si viaja.
+infra/conf/secrets-manager-stub/mappings/secret-kv.json
+
+# Valores propios para el stub de Secrets Manager (credenciales reales para probar en local)
+deploy/secrets-manager-stub/mappings/*.local.json

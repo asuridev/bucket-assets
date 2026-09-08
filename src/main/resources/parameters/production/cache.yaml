@@ -13,3 +13,7 @@ spring:
     redis:
       host: ${REDIS_HOST}
       port: ${REDIS_PORT}
+      # Password de Redis. Va vacia por defecto porque una instancia sin auth es
+      # legitima; cuando la hay, el valor sale del secreto de Secrets Manager, que
+      # publica REDIS_PASSWORD como propiedad (ver secret-manager.md).
+      password: ${REDIS_PASSWORD:}

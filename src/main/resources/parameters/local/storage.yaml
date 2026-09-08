@@ -2,6 +2,11 @@
 # SDK: lo unico que cambia es contra quien. Aqui el destino es el MinIO que levanta
 # deploy/docker-compose.yaml, firmando HMAC en vez de IAM, asi que no hacen falta
 # credenciales de IBM Cloud pero si se ejercita la ruta de codigo real.
+#
+# Las dos credenciales salen del secreto que sirve el stub de Secrets Manager
+# (deploy/secrets-manager-stub/mappings/secret-kv.json), igual que en develop y production
+# salen del secreto real: por eso en local tambien hay un sitio unico donde se setean.
+# El default esta para que SECRETS_ENABLED=false siga arrancando.
 storage:
   auth-mode: hmac
   endpoint: ${MINIO_ENDPOINT:http://localhost:9000}

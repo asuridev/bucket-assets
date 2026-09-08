@@ -10,6 +10,9 @@ IBM Code Engine. Implementa la [HU-211](HU-211.md):
 
 Spring Boot 3.5.3 · Java 21 · Maven · arquitectura hexagonal (`domain` → `application` → `infrastructure`).
 
+Las credenciales salen de **IBM Cloud Secrets Manager** al arrancar; en local, de un stub que
+habla su misma API. El mecanismo completo, en **[secret-manager.md](secret-manager.md)**.
+
 ---
 
 ## 1. Requisitos
@@ -72,12 +75,29 @@ El servicio escucha en `http://localhost:8080`. Swagger UI en
 
 ---
 
-## 4. MinIO, el bucket y Redis
+## 4. MinIO, Redis y el stub de Secrets Manager
 
-El compose levanta cuatro cosas: **MinIO**, un contenedor `minio-init` que **crea el bucket
+El compose levanta cinco cosas: **MinIO**, un contenedor `minio-init` que **crea el bucket
 solo** (espera al healthcheck de MinIO y lanza `mc mb --ignore-existing`, así que es
-idempotente y puedes repetir el `up` sin romper nada), **Redis**, que es la caché del GET, y
-**Redis Commander**, una UI web para mirar las claves de esa caché sin `redis-cli`.
+idempotente y puedes repetir el `up` sin romper nada), **Redis**, que es la caché del GET,
+**Redis Commander**, una UI web para mirar las claves de esa caché sin `redis-cli`, y un
+**WireMock que emula IBM Cloud Secrets Manager** en el 8090.
+
+Ese último existe para que en local se recorra el mismo camino de código que en Code Engine:
+el mismo SDK pidiendo un token de IAM y leyendo el secreto, solo que contra otra URL. Es el
+mismo criterio con el que aquí se usa MinIO en vez del COS.
+
+En DevX, esta misma emulación se levanta desde el stack a la carta con
+`cd infra && ./up.sh ibm-secret-manager` (ver [`infra/README.md`](infra/README.md)); allí los
+ficheros están en `infra/conf/` y el secreto se genera con las credenciales de ese stack.
+
+**En local los secretos se setean en `deploy/secrets-manager-stub/mappings/secret-kv.json`**,
+en el objeto `data` — es el equivalente local del secreto `kv` de IBM Cloud, y de ahí salen las
+credenciales con las que el servicio firma contra MinIO. Se edita, se reinicia el stub
+(`podman restart contentms-secrets-stub`) y se reinicia el servicio. Si pones un valor
+incorrecto, la subida falla con `503 STORAGE_UNAVAILABLE`: es la forma de comprobar de un
+vistazo que el mecanismo está funcionando. Detalle en [secret-manager.md](secret-manager.md) §5
+y en [`deploy/secrets-manager-stub/README.md`](deploy/secrets-manager-stub/README.md).
 
 Redis va sin volumen a propósito: una caché no tiene que sobrevivir a un `down`, y así cada
 arranque parte en frío, que es lo que se quiere para probarla.
@@ -105,9 +125,13 @@ docker compose -f deploy/docker-compose.yaml down
 ### Comprobar que arrancó
 
 ```bash
-podman ps                                    # contentms-minio, -redis y -redis-ui arriba
+podman ps                                    # contentms-minio, -redis, -redis-ui y -secrets-stub arriba
 podman logs contentms-minio-init             # "Bucket cms-content listo (privado)"
 podman exec contentms-redis redis-cli ping   # PONG
+
+# el stub de Secrets Manager responde a los dos endpoints que usa el SDK
+curl -s -X POST http://localhost:8090/identity/token
+curl -s http://localhost:8090/api/v2/secret_groups/default/secret_types/kv/secrets/contentms-secrets
 ```
 
 `contentms-minio-init` queda en `Exited (0)`. **Eso es lo correcto**: es un contenedor de un
@@ -284,8 +308,8 @@ compose tal cual.
 |---|---|---|
 | `MINIO_ENDPOINT` | `http://localhost:9000` | API S3 de MinIO |
 | `MINIO_REGION` | `us-east-1` | Región con la que se firma |
-| `MINIO_ACCESS_KEY` | `minioadmin` | Access key HMAC |
-| `MINIO_SECRET_KEY` | `minioadmin` | Secret key HMAC |
+| `MINIO_ACCESS_KEY` | `minioadmin` | Access key HMAC. **Sale del secreto** que sirve el stub (ver arriba); el default es solo para `SECRETS_ENABLED=false` |
+| `MINIO_SECRET_KEY` | `minioadmin` | Secret key HMAC. Igual que la anterior |
 | `MINIO_BUCKET_CMS_CONTENT` | `cms-content` | Bucket; el compose lo crea con este mismo valor |
 
 ### Variables de la caché
@@ -300,6 +324,56 @@ compose tal cual.
 En `production` `REDIS_HOST` y `REDIS_PORT` no traen default, igual que las credenciales del
 COS: con la caché activada, arrancar sin saber dónde está Redis es un fallo de despliegue y
 debe verse al arrancar, no en la primera petición.
+
+### Variables de Secrets Manager
+
+De aquí salen `COS_API_KEY`, `COS_SERVICE_INSTANCE_ID` y `REDIS_PASSWORD` al arrancar: los YAML
+los siguen leyendo como `${VARIABLE}` sin saber de dónde vienen. En `local` todas traen default
+y apuntan al stub del compose. Explicación completa en [secret-manager.md](secret-manager.md).
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `SECRETS_ENABLED` | `true` | A `false` desactiva Secrets Manager: los secretos vuelven a ser variables de entorno |
+| `SECRETS_AUTH_MODE` | `apikey` | `apikey` (una API key) o `container` (el token que la plataforma monta en el pod). Ver abajo |
+| `SECRETS_URL` | `http://localhost:8090` en `local`; **sin default** fuera | Endpoint de la instancia |
+| `SECRETS_IAM_URL` | `http://localhost:8090` en `local`; `https://iam.cloud.ibm.com` fuera | Emisor del token IAM |
+| `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto |
+| `SECRETS_GROUP` | `default` | Grupo que lo contiene |
+| `IBM_CLOUD_API_KEY` | valor falso en `local`; vacío fuera | **Modo `apikey`**: la API key con la que se lee el secreto. Es la única credencial que sigue siendo variable de entorno plana, y es la llave con la que se abren las demás |
+| `SECRETS_IAM_PROFILE_NAME` | vacío | **Modo `container`**: nombre del trusted profile contra el que se canjea el token del pod |
+| `SECRETS_IAM_PROFILE_ID` | vacío | **Modo `container`**: alternativa al nombre |
+| `SECRETS_CR_TOKEN_FILE` | vacío | **Modo `container`**: fichero del token. Vacío = las tres rutas por defecto del SDK, una de ellas la de Code Engine. Solo se fija para ensayar en local |
+
+Una variable de entorno real **gana** al valor del secreto: es la vía de escape para
+sobreescribir uno puntual sin editar el secreto. Y si `SECRETS_ENABLED=true` y el secreto no se
+puede leer, **la aplicación no arranca**.
+
+#### Los dos modos de autenticación
+
+`apikey` es el **default y lo que ya funciona**: no hay que hacer nada para desplegar con él.
+`container` elimina la última credencial del despliegue —la identidad se la da la plataforma al
+pod, contra un trusted profile— pero requiere que DevOps lo haya creado y enlazado a la app.
+
+Conmutar es **una variable de entorno y un reinicio**, sin imagen nueva ni cambios de código, y
+el rollback es igual de barato:
+
+```bash
+ibmcloud ce app update --name content-ms \
+  --env SECRETS_AUTH_MODE=container \
+  --env SECRETS_IAM_PROFILE_NAME=contentms-sm-reader
+```
+
+El modo `container` se puede **ensayar en local** antes de pedir nada, contra el mismo stub:
+
+```bash
+SECRETS_AUTH_MODE=container \
+SECRETS_CR_TOKEN_FILE=deploy/secrets-manager-stub/cr-token \
+SECRETS_IAM_PROFILE_NAME=contentms-sm-reader \
+java -jar target/content-ms-1.0.0.jar --spring.profiles.active=local
+```
+
+No hay fallback automático de un modo al otro, a propósito: ver
+[secret-manager.md](secret-manager.md) §7.3.
 
 ### Variables del compose (no las lee el servicio)
 
@@ -321,6 +395,11 @@ compose (la de DevX) que no sustituyen dentro de `ports:` y parten el valor por 
 
 `develop` y `production` no traen valores por defecto en lo obligatorio, a propósito: la app
 se niega a arrancar sin credenciales en vez de fallar en la primera petición.
+
+`COS_API_KEY` y `COS_SERVICE_INSTANCE_ID` ya **no hace falta exportarlas** en esos perfiles: las
+publica Secrets Manager al arrancar (ver arriba). Se siguen documentando aquí porque exportarlas
+a mano sigue funcionando —y de hecho gana al secreto—, lo que es útil para depurar, pero en un
+despliegue de verdad no deben estar puestas.
 
 | Variable | Obligatoria | Ejemplo |
 |---|---|---|
@@ -365,6 +444,7 @@ src/main/java/com/bnpparibas/cardif/cloud/contentms/
     ├── storage/       CosFileStorage (adaptador del puerto) +
     │                  CachedFileStorage (decorador de caché, @Primary)
     ├── configurations/  usecase/, storage/, cache/
+    ├── secrets/       SecretsEnvironmentPostProcessor + IbmSecretsManagerSource
     └── correlation/   CorrelationContext + filtro
 ```
 

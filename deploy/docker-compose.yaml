@@ -79,6 +79,19 @@ services:
     ports:
       - "8081:8081"   # literal a proposito, ver el comentario del puerto de redis
 
+  # Emula la API v2 de IBM Cloud Secrets Manager (y el endpoint de token de IAM) para que en
+  # local se ejercite el MISMO cliente y el MISMO SDK que en Code Engine. Pasar a develop o
+  # production es cambiar SECRETS_URL y SECRETS_IAM_URL: cero codigo.
+  # Los stubs y como editarlos, en deploy/secrets-manager-stub/README.md.
+  secrets-manager-stub:
+    image: wiremock/wiremock:3.9.2
+    container_name: contentms-secrets-stub
+    command: ["--verbose"]
+    ports:
+      - "8090:8080"   # literal a proposito, ver el comentario del puerto de redis
+    volumes:
+      - ./secrets-manager-stub:/home/wiremock:ro
+
   # MinIO arranca vacio: sin este paso la primera subida falla con NoSuchBucket.
   # Es idempotente, asi que se puede volver a levantar sin romper nada.
   minio-init:

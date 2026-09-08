@@ -1,0 +1,6 @@
+# Un EnvironmentPostProcessor tiene que declararse aqui: corre antes de que exista el
+# contexto, asi que no hay escaneo de componentes que pueda descubrirlo. spring.factories
+# sigue siendo el mecanismo para este punto de extension en Spring Boot 3 (lo que se movio
+# a AutoConfiguration.imports son las autoconfiguraciones, no los EPP).
+org.springframework.boot.env.EnvironmentPostProcessor=\
+com.bnpparibas.cardif.cloud.contentms.infrastructure.secrets.SecretsEnvironmentPostProcessor
