@@ -32,11 +32,13 @@ mongo-express (con su nginx delante), **minio** → creación del bucket, que se
 **MinIO es la única excepción a `admin`/`admin`**: rechaza arrancar con una contraseña de menos
 de 8 caracteres.
 
-**El `admin`/`admin` de MongoDB lo crea `mongo-init`, no la imagen.** Bitnami solo aplica
-`MONGODB_ROOT_USER`/`MONGODB_ROOT_PASSWORD` en la primera inicialización, con el directorio de
-datos vacío: sobre un volumen `mongo-data` que ya existía, la base `admin` se queda **sin ningún
-usuario** y la URI `mongodb://admin:admin@mongo:27017/?authSource=admin` no autentica. El servicio
-`mongo-init` lo garantiza en cada `up.sh`, exista ya el volumen o no.
+**El `admin`/`admin` de MongoDB lo crea la propia imagen**, con
+`MONGO_INITDB_ROOT_USERNAME`/`MONGO_INITDB_ROOT_PASSWORD`: el entrypoint oficial activa `--auth`
+por su cuenta y crea ese usuario con rol `root`. Pero **solo en la primera inicialización, con el
+directorio de datos vacío** — se salta el init si ya encuentra `/data/db/WiredTiger`. Sobre un
+volumen con datos previos la base `admin` se quedaría sin ningún usuario y la URI
+`mongodb://admin:admin@mongo:27017/?authSource=admin` no autenticaría; el remedio es empezar
+limpio con `./down.sh -v`.
 
 Tras levantar, hay que hacer ***Add Port*** en el panel PORTS de la IDE con cada puerto de UI
 (8081, 8082, 9001). Sin eso no hay forwarded address y la URL da 502.
@@ -47,7 +49,6 @@ Tras levantar, hay que hacer ***Add Port*** en el panel PORTS de la IDE con cada
 images.json               TODAS las imágenes. Es el único sitio donde se cambia una versión.
 .env                      DEVX_USER / DEVX_HOST. Lo crea up.sh la primera vez. No se commitea.
 services/*.yaml           Un fragmento de compose por servicio, con marcadores __IMAGE_X__.
-services/mongo-init.yaml  Init de un solo uso: crea el usuario admin de Mongo. Ver abajo.
 conf/default.conf.template  Plantilla del nginx que sirve mongo-express bajo el subpath.
 conf/mongo-ui.conf        Generada por up.sh con tu prefijo dentro. No se commitea.
 generated/docker-compose.yaml  Lo que up.sh arma y levanta. No se commitea.
@@ -58,59 +59,46 @@ clave en `images.json`. Es a propósito: una imagen vacía produce un compose in
 error indescifrable.
 
 Cada fragmento nuevo hay que registrarlo en el bloque de ensamblado de `up.sh`. El de Mongo son
-cuatro `render`, y el orden importa porque es el que acaba en el compose:
+tres `render`, y el orden importa porque es el que acaba en el compose:
 
 ```sh
 render mongo.yaml
-render mongo-init.yaml
 render mongo-express.yaml
 render mongo-ui-proxy.yaml
 ```
 
-## La versión de MongoDB no está fijada, y eso se nota
+## La versión de MongoDB, y por qué ya no hay `mongo-init`
 
-`images.json` pide `bitnami/mongodb:latest` porque Bitnami ya no publica tags versionados
-públicos. Eso significa que **la versión del servidor depende del registro que responda**: en DevX
-el mirror corporativo resuelve ese `latest` a **MongoDB 4.4.26**, mientras que contra Docker Hub
-sale una 8.x. Comprobar siempre con qué se está trabajando:
+`images.json` fija **`mongo:8.3.8-noble`**, la imagen oficial. Antes pedía
+`bitnami/mongodb:latest`, sin fijar, y la versión del servidor dependía del registro que
+respondiera: el mirror corporativo de DevX resolvía ese `latest` a **MongoDB 4.4.26** y Docker Hub
+a una 8.x. De ahí salía casi toda la complejidad que había aquí — 4.4 no trae `mongosh`, así que
+el healthcheck encadenaba cuatro invocaciones, y `db.auth()` devuelve `1` en la shell legacy pero
+`{ ok: 1 }` en `mongosh`, así que cualquier script tenía que aceptar las dos formas.
 
-```bash
-docker exec infra-mongo mongo --quiet --eval "db.version()"     # 4.4 y anteriores
-docker exec infra-mongo mongosh --quiet --eval "db.version()"   # 5.0 en adelante
-```
+Con el tag fijado eso desaparece: `mongosh` está siempre, el healthcheck es una línea, y sobre
+todo **el usuario `admin` lo crea el entrypoint de la imagen**, que además añade `--auth` solo.
+Existía un servicio `mongo-init` (contenedor de un solo uso, con `network_mode: "service:mongo"`
+para entrar por la *localhost exception* y 30 reintentos) porque Bitnami no lo garantizaba; ya no
+hace falta y se ha eliminado.
 
-La diferencia que muerde es la shell: **4.4 no trae `mongosh`, solo el `mongo` legacy**. Por eso
-tanto el healthcheck de `mongo.yaml` como el init prueban las dos, y en las dos ubicaciones
-(`/opt/bitnami/mongodb/bin/` y el `PATH`). Cualquier comando nuevo que se añada aquí tiene que
-hacer lo mismo, o funcionará en una máquina y no en la otra.
+> **Si el mirror de DevX no sirviera `mongo:8.3.8-noble`**, es un cambio de una línea: la clave
+> `mongo` de `images.json`. Comprobar qué versión está corriendo de verdad:
+> `docker exec infra-mongo mongosh --quiet --eval "db.version()"`.
 
-Y no basta con elegir bien el binario: **las dos shells no devuelven lo mismo**. `db.auth()` da `1`
-en el `mongo` de 4.4 y `{ ok: 1 }` en `mongosh`, así que cualquier script que compare el resultado
-tiene que aceptar las dos formas. `mongo-init` ya lo hace, y está comentado en el fragmento.
-
-## Dos cosas que `mongo-init` da por sentadas (y por qué)
-
-**`condition: service_healthy` no siempre se respeta.** `docker compose` lo cumple; **podman-compose
-lo ignora** y arranca `mongo-init` a la vez que `mongod`. Por eso el init no confía en el
-`depends_on`: reintenta hasta 30 veces cada 4 s, y si se agotan sale con código distinto de 0 en
-lugar de fingir que fue bien.
-
-**Lo que se reintenta es el trabajo, no un ping previo.** Bitnami levanta un `mongod` **temporal**
-para inicializar y luego lo reinicia. Una primera versión esperaba con un ping y después lanzaba el
-script una sola vez: el ping pasaba contra el `mongod` temporal y, cuando le tocaba al script,
-`mongod` estaba reiniciándose y la conexión moría. Reintentando el script entero —que es
-idempotente— esa ventana deja de importar. Se ve en los logs de un arranque en frío: un primer
-intento fallido y el segundo en verde.
-
-Para reproducir en local la versión de DevX sin depender del mirror, la imagen oficial sí tiene
-tag fijo:
+**Migración desde el stack anterior:** el volumen viejo, `infra_mongo-data`, tenía el layout de
+Bitnami (`/bitnami/mongodb`) y la imagen oficial lee `/data/db`. Por eso el volumen nuevo se llama
+`mongo-data-v8`: reutilizar el otro habría dado un `mongod` con autorización activada y cero
+usuarios. El viejo queda huérfano y se puede borrar:
 
 ```bash
-podman run -d --name t-mongo docker.io/library/mongo:4.4.26 --auth
+podman volume rm infra_mongo-data      # o docker volume rm
 ```
 
-Arrancada así queda en el mismo estado que el Mongo de DevX: autorización activada y **cero
-usuarios**, que es justo el caso que cubre `mongo-init`.
+**Un detalle de Bitnami que sí sobrevive:** `condition: service_healthy` lo cumple
+`docker compose`, pero **`podman-compose` lo ignora** y arranca todo a la vez. Por eso
+mongo-express lleva `restart: unless-stopped`: aborta si su primera conexión no autentica y no
+reintenta por su cuenta, así que puede pillar a `mongod` todavía inicializándose.
 
 ## Por qué cada UI necesita algo distinto
 
@@ -134,7 +122,6 @@ forma:
 | mongo-express carga **sin estilos** | El prefijo de `conf/mongo-ui.conf` no coincide con la URL | Volver a lanzar `./up.sh mongo`: lo regenera desde `.env` |
 | Las URLs del resumen llevan otro usuario | `infra/.env` tiene un `DEVX_USER` equivocado | Editarlo y relanzar `./up.sh` |
 | `ERROR: la clave "X" no esta en images.json` | Falta una imagen | Añadirla a `images.json` |
-| `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck usa una shell que esa imagen no tiene (4.4 no trae `mongosh`) | Ya contemplado: el test prueba `mongosh` y `mongo`. Si vuelve a pasar, mirar `docker inspect infra-mongo --format '{{json .State.Health}}'` |
-| mongo-express o la app dan **`Authentication failed`** | `mongo-init` no llegó a crear el usuario `admin` | `docker logs infra-mongo-init`. Salida de emergencia, a mano: `docker exec -it infra-mongo mongo` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
-| `infra-mongo-init` termina con código distinto de 0 | Suele ser un `admin` que ya existe con OTRA contraseña: el init no la pisa a propósito | `docker logs infra-mongo-init` para ver el error, y o se usa esa contraseña o se empieza limpio con `./down.sh -v` |
-| `infra-mongo-init` escribe `Error: Authentication failed.` o un `ERROR ... requires authentication` en el primer intento | **Es normal**: el init comprueba si `admin` existe intentando autenticar (la shell legacy de 4.4 imprime eso antes de devolver el control), y en un arranque en frío el primer intento puede pillar a `mongod` reiniciándose | Nada. Lo que importa es la última línea (`usuario admin creado...` o `ya existe`) y que el contenedor acabe en `Exited (0)` |
+| `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck no encuentra `mongosh`, casi seguro porque el registro sirvió otra versión bajo ese tag | `docker inspect infra-mongo --format '{{json .State.Health}}'` y `docker exec infra-mongo mongosh --quiet --eval "db.version()"` |
+| mongo-express o la app dan **`Authentication failed`** | El volumen `mongo-data-v8` ya tenía datos, así que el entrypoint se saltó el init y no creó el usuario `admin` | `./down.sh -v` para empezar limpio. A mano: `docker exec -it infra-mongo mongosh` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
+| `infra-mongo` sale con **exit 1** nada más arrancar | Solo está definida una de `MONGO_INITDB_ROOT_USERNAME`/`_PASSWORD`: el entrypoint aborta a propósito en vez de arrancar sin autorización | Revisar `services/mongo.yaml`: las dos o ninguna |

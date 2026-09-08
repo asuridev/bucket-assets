@@ -26,7 +26,8 @@ case "$1" in
     grep -A 10 '^volumes:' "$COMPOSE_FILE" | grep -E '^  [a-z-]+:' | sed 's/^/   - /' || true
     echo
     echo "Lo que NO hay que rehacer a mano despues: el usuario admin de MongoDB lo vuelve"
-    echo "a crear mongo-init en el siguiente ./up.sh, y el bucket de MinIO, minio-init."
+    echo "a crear la propia imagen de Mongo al reinicializar el volumen, y el bucket de MinIO,"
+    echo "minio-init."
     printf 'Escribe "si" para continuar: '
     read -r ANSWER || ANSWER=""
     [ "$ANSWER" = "si" ] || { echo "Cancelado."; exit 1; }
@@ -51,5 +52,5 @@ echo
 echo "Stack parado. El compose generado sigue en infra/$COMPOSE_FILE por si quieres revisarlo;"
 echo "./up.sh lo reescribe en la siguiente ejecucion."
 
-# Los contenedores de un solo uso (mongo-init, minio-init) quedan en Exited (0) y `down`
-# se los lleva igual que al resto: no hay nada que limpiar aparte.
+# Los contenedores de un solo uso (minio-init) quedan en Exited (0) y `down` se los lleva igual
+# que al resto: no hay nada que limpiar aparte.

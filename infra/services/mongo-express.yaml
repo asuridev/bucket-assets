@@ -5,12 +5,10 @@
     container_name: infra-mongo-express
     depends_on:
       - mongo
-      # Solo orden de arranque: si el usuario aun no esta creado cuando mongo-express
-      # intenta conectar, se muere. De eso se encarga el restart de abajo.
-      - mongo-init
-    # mongo-express aborta si la primera conexion no autentica, y no reintenta por su
-    # cuenta. Sin esto se queda caido aunque mongo-init cree el usuario medio segundo
-    # despues.
+    # mongo-express aborta si la primera conexion no autentica, y no reintenta por su cuenta.
+    # El restart NO sobra pese a que la imagen oficial de Mongo ya crea el usuario: aqui el
+    # depends_on es solo orden de arranque (podman-compose ignora `condition: service_healthy`),
+    # asi que mongo-express puede intentar conectar mientras mongod todavia se esta inicializando.
     restart: unless-stopped
     environment:
       ME_CONFIG_MONGODB_URL: mongodb://admin:admin@mongo:27017/?authSource=admin

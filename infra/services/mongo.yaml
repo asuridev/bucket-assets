@@ -2,40 +2,35 @@
     image: __IMAGE_MONGO__
     container_name: infra-mongo
     environment:
-      # Variables de Bitnami, no las MONGO_INITDB_* de la imagen oficial.
+      # Variables de la imagen OFICIAL de MongoDB (no las MONGODB_* de Bitnami, que es lo que
+      # habia aqui antes).
       #
-      # OJO: Bitnami solo aplica esto en la PRIMERA inicializacion, con el directorio de
-      # datos vacio. Si el volumen mongo-data ya existe (creado por una version anterior
-      # de este stack), el usuario root NO se crea y estas dos variables no hacen nada.
-      # Por eso el usuario lo garantiza aparte el servicio mongo-init.
-      MONGODB_ROOT_USER: admin
-      MONGODB_ROOT_PASSWORD: admin
+      # El entrypoint oficial hace dos cosas con ellas: anade `--auth` a mongod por su cuenta y
+      # crea este usuario con rol root sobre `admin`. Hacen falta LAS DOS: si solo se define una,
+      # el contenedor aborta con exit 1 en vez de arrancar sin autorizacion.
+      #
+      # OJO: eso solo ocurre en la PRIMERA inicializacion, con el directorio de datos vacio. El
+      # entrypoint se salta el init si ya encuentra /data/db/WiredTiger (o journal, local.0,
+      # storage.bson), asi que sobre un volumen con datos previos estas variables no hacen nada.
+      # Por eso el volumen de abajo se llama -v8: el stack anterior usaba `mongo-data` con el
+      # layout de Bitnami en /bitnami/mongodb, y reaprovecharlo aqui habria dado un mongod con
+      # autorizacion activada y CERO usuarios, que es justo el fallo dificil de diagnosticar.
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
     ports:
       - "27017:27017"
     volumes:
-      # Bitnami guarda los datos aqui, no en /data/db.
-      - mongo-data:/bitnami/mongodb
+      # La imagen oficial guarda los datos aqui, no en /bitnami/mongodb.
+      - mongo-data-v8:/data/db
     healthcheck:
-      # Cuatro intentos encadenados en vez de una sola ruta a mongosh, por dos motivos
-      # distintos que se suman:
-      #
-      #   - La SHELL depende de la version del servidor: MongoDB 4.4 no trae `mongosh`,
-      #     solo el `mongo` legacy. Y aqui la version no se elige: images.json pide
-      #     `bitnami/mongodb:latest`, y el registro corporativo de DevX resuelve ese tag
-      #     a 4.4.26 mientras que contra Docker Hub sale una 8.x.
-      #   - El PATH que ve el healthcheck depende de la variante de imagen, de ahi que se
-      #     pruebe primero la ruta absoluta de Bitnami y luego el nombre pelado.
-      #
-      # Con la ruta fija a mongosh que habia antes, en DevX el contenedor se quedaba
-      # `unhealthy` para siempre, y eso bloquea cualquier `condition: service_healthy`.
+      # Una sola shell, a diferencia de la cascada de cuatro que hubo aqui mientras la version del
+      # servidor dependia del registro: con el tag fijado, `mongosh` esta siempre en el PATH.
+      # `ping` es uno de los comandos que mongod acepta sin autenticar, asi que el test funciona
+      # aunque --auth este activo.
       test:
         - CMD-SHELL
-        - >-
-          /opt/bitnami/mongodb/bin/mongosh --quiet --eval "db.adminCommand('ping').ok" ||
-          /opt/bitnami/mongodb/bin/mongo --quiet --eval "db.adminCommand('ping').ok" ||
-          mongosh --quiet --eval "db.adminCommand('ping').ok" ||
-          mongo --quiet --eval "db.adminCommand('ping').ok"
+        - mongosh --quiet --eval "db.adminCommand('ping').ok"
       interval: 5s
       timeout: 10s
       retries: 20
-      start_period: 40s
+      start_period: 20s
