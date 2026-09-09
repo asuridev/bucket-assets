@@ -2,44 +2,48 @@
   "version": "2.0.0",
 
   // Los scripts de infra/ son POSIX (#!/bin/sh) y hacen `cd "$(dirname "$0")"` ellos mismos,
-  // asi que el cwd de la tarea da igual. En DevX (Linux) se ejecutan con el `sh` del sistema;
-  // en Windows hay que forzar el bash de Git, porque el shell por defecto es PowerShell y
-  // ahi `sh ./infra/up.sh` no existe.
+  // asi que el cwd de la tarea da igual.
+  //
+  // El shell se fuerza a login + interactivo (-lic) A PROPOSITO. Por defecto VS Code lanza
+  // las tareas en un shell no-login y no-interactivo, que NO carga ~/.profile ni ~/.bashrc:
+  // en DevX eso deja fuera todo lo que el entorno inyecta ahi (PATH del docker, variables
+  // del workspace). Con -lic la tarea ve exactamente el mismo entorno que una terminal
+  // abierta a mano, que es el caso que sabemos que funciona.
+  "linux": {
+    "options": { "shell": { "executable": "/bin/bash", "args": ["-lic"] } }
+  },
+  "osx": {
+    "options": { "shell": { "executable": "/bin/bash", "args": ["-lic"] } }
+  },
   "windows": {
+    // En Windows el shell por defecto es PowerShell, donde `sh` no existe.
     "options": {
-      "shell": {
-        "executable": "C:\Program Files\Git\bin\bash.exe",
-        "args": ["-c"]
-      }
+      "shell": { "executable": "C:\Program Files\Git\bin\bash.exe", "args": ["-lic"] }
     }
   },
 
+  // Sin `clear`: la salida de la ejecucion anterior se conserva. El terminal queda abierto
+  // con "Press any key to close" -- no pulses nada si quieres leerlo, o reabrelo desde el
+  // desplegable del panel Terminal.
   "presentation": {
     "reveal": "always",
     "panel": "dedicated",
-    "clear": true
+    "close": false,
+    "echo": true
   },
 
   "tasks": [
-    {
-      "label": "infra: up (menu)",
-      "detail": "Levanta el stack eligiendo servicios en el menu interactivo",
-      "type": "shell",
-      "command": "sh ./infra/up.sh",
-      "problemMatcher": [],
-      "options": {
-        "statusbar": { "label": "$(play) up", "color": "#4CAF50" }
-      }
-    },
+    // --- botones: NO interactivos -----------------------------------------------------
+    // up.sh hace `read` para el menu y para el nombre del bucket. Con EOF sigue adelante
+    // en silencio con el valor por defecto, asi que un boton nunca debe depender de stdin:
+    // estas variantes pasan la seleccion por argumento y no preguntan nada.
     {
       "label": "infra: up all",
-      "detail": "Levanta todos los servicios sin preguntar",
+      "detail": "Levanta redis + mongo + minio + ibm-secret-manager (bucket cms-content)",
       "type": "shell",
       "command": "sh ./infra/up.sh all",
       "problemMatcher": [],
-      "options": {
-        "statusbar": { "hide": true }
-      }
+      "options": { "statusbar": { "label": "$(play) up all", "color": "#4CAF50" } }
     },
     {
       "label": "infra: down",
@@ -47,19 +51,7 @@
       "type": "shell",
       "command": "sh ./infra/down.sh",
       "problemMatcher": [],
-      "options": {
-        "statusbar": { "label": "$(debug-stop) down", "color": "#E57373" }
-      }
-    },
-    {
-      "label": "infra: down -v (BORRA volumenes)",
-      "detail": "Baja el stack y borra los volumenes: se pierden los datos. Pide confirmacion",
-      "type": "shell",
-      "command": "sh ./infra/down.sh -v",
-      "problemMatcher": [],
-      "options": {
-        "statusbar": { "hide": true }
-      }
+      "options": { "statusbar": { "label": "$(debug-stop) down", "color": "#E57373" } }
     },
     {
       "label": "infra: reload-secret",
@@ -67,9 +59,33 @@
       "type": "shell",
       "command": "sh ./infra/reload-secret.sh",
       "problemMatcher": [],
-      "options": {
-        "statusbar": { "label": "$(key) secret" }
-      }
+      "options": { "statusbar": { "label": "$(key) secret" } }
+    },
+
+    // --- interactivas: solo desde Run Task, sin boton ----------------------------------
+    {
+      "label": "infra: up (menu)",
+      "detail": "Menu interactivo. Necesita teclado: no la pongas en un boton",
+      "type": "shell",
+      "command": "sh ./infra/up.sh",
+      "problemMatcher": [],
+      "options": { "statusbar": { "hide": true } }
+    },
+    {
+      "label": "infra: up --dry-run all",
+      "detail": "Solo genera infra/generated/docker-compose.yaml, no levanta nada",
+      "type": "shell",
+      "command": "sh ./infra/up.sh --dry-run all",
+      "problemMatcher": [],
+      "options": { "statusbar": { "hide": true } }
+    },
+    {
+      "label": "infra: down -v (BORRA volumenes)",
+      "detail": "Baja el stack y borra los volumenes: se pierden los datos. Pide confirmacion por teclado",
+      "type": "shell",
+      "command": "sh ./infra/down.sh -v",
+      "problemMatcher": [],
+      "options": { "statusbar": { "hide": true } }
     }
   ]
 }
