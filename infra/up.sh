@@ -288,29 +288,37 @@ fi
 # capa ("unexpected EOF"). Cada reintento reaprovecha las capas ya bajadas, asi que avanza; hacerlo
 # dentro del `up` no reintenta nada y ademas deja el fallo enterrado entre las barras de
 # progreso de todos los servicios a la vez.
-pull_image() {
-  n=1
-  while [ "$n" -le 3 ]; do
-    if $RUNTIME pull "$1" >/dev/null; then
-      echo "  $1"
-      return 0
-    fi
-    n=$((n + 1))
-    if [ "$n" -le 3 ]; then
-      echo "  $1 -- fallo, reintento $n de 3 (lo ya descargado se conserva)"
-    fi
+# Se usa el `pull` del propio compose, y NO un `$RUNTIME pull` por imagen, por la salida: esta
+# muestra el progreso por servicio y por capa, que es lo unico que dice si una descarga de
+# varios minutos esta avanzando o colgada. Y sin redirigir nada: docker escribe el progreso por
+# stdout y podman por stderr, asi que cualquier `>/dev/null` deja la pantalla muda en uno de los
+# dos.
+#
+# Y el reintento NO se decide por el codigo de salida del pull, sino comprobando que las
+# imagenes estan: `podman-compose pull` devuelve 0 aunque la descarga falle (comprobado), asi
+# que fiarse de su codigo dejaria los reintentos sin disparar justo cuando hacen falta.
+images_missing() {
+  missing=""
+  for image in $(grep -E '^    image:' "$COMPOSE_FILE" | awk '{print $2}' | sort -u); do
+    $RUNTIME image inspect "$image" >/dev/null 2>&1 || missing="$missing $image"
   done
-  return 1
+  echo "$missing"
 }
 
-echo
-echo "Descargando imagenes..."
-# Salen del compose ya generado, para no repetir aqui la lista de servicios seleccionados.
-for image in $(grep -E '^    image:' "$COMPOSE_FILE" | awk '{print $2}' | sort -u); do
-  pull_image "$image" || die "no se pudo descargar $image tras 3 intentos.
+ATTEMPT=1
+while : ; do
+  $COMPOSE -p infra -f "$COMPOSE_FILE" pull || true
+  MISSING=$(images_missing)
+  [ -n "$MISSING" ] || break
+  ATTEMPT=$((ATTEMPT + 1))
+  [ "$ATTEMPT" -le 3 ] || die "no se pudieron descargar tras 3 intentos:$MISSING
   Si el mensaje de arriba es un EOF o un timeout, es la descarga cortandose: vuelve a lanzar
   ./up.sh y seguira donde lo dejo. Si es un 'unsupported media type' o un 'not found', esa
   imagen no esta en el mirror corporativo: cambia su clave en infra/images.json."
+  echo
+  echo "Faltan por descargar:$MISSING"
+  echo "Reintento $ATTEMPT de 3 -- las capas ya bajadas se conservan, asi que este intento"
+  echo "sigue donde se quedo el anterior."
 done
 
 echo
