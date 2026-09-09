@@ -1,0 +1,75 @@
+{
+  "version": "2.0.0",
+
+  // Los scripts de infra/ son POSIX (#!/bin/sh) y hacen `cd "$(dirname "$0")"` ellos mismos,
+  // asi que el cwd de la tarea da igual. En DevX (Linux) se ejecutan con el `sh` del sistema;
+  // en Windows hay que forzar el bash de Git, porque el shell por defecto es PowerShell y
+  // ahi `sh ./infra/up.sh` no existe.
+  "windows": {
+    "options": {
+      "shell": {
+        "executable": "C:\Program Files\Git\bin\bash.exe",
+        "args": ["-c"]
+      }
+    }
+  },
+
+  "presentation": {
+    "reveal": "always",
+    "panel": "dedicated",
+    "clear": true
+  },
+
+  "tasks": [
+    {
+      "label": "infra: up (menu)",
+      "detail": "Levanta el stack eligiendo servicios en el menu interactivo",
+      "type": "shell",
+      "command": "sh ./infra/up.sh",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": { "label": "$(play) up", "color": "#4CAF50" }
+      }
+    },
+    {
+      "label": "infra: up all",
+      "detail": "Levanta todos los servicios sin preguntar",
+      "type": "shell",
+      "command": "sh ./infra/up.sh all",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": { "hide": true }
+      }
+    },
+    {
+      "label": "infra: down",
+      "detail": "Para los contenedores. Los datos sobreviven",
+      "type": "shell",
+      "command": "sh ./infra/down.sh",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": { "label": "$(debug-stop) down", "color": "#E57373" }
+      }
+    },
+    {
+      "label": "infra: down -v (BORRA volumenes)",
+      "detail": "Baja el stack y borra los volumenes: se pierden los datos. Pide confirmacion",
+      "type": "shell",
+      "command": "sh ./infra/down.sh -v",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": { "hide": true }
+      }
+    },
+    {
+      "label": "infra: reload-secret",
+      "detail": "Recarga el secreto del stub de Secrets Manager",
+      "type": "shell",
+      "command": "sh ./infra/reload-secret.sh",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": { "label": "$(key) secret" }
+      }
+    }
+  ]
+}

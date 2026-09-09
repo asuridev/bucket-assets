@@ -7,7 +7,7 @@ mvnw.cmd
 .mvn/
 .idea/
 *.iml
-.vscode/
+!.vscode/tasks.json
 *.log
 
 # Entorno real de DevX: lleva credenciales de la UI de Redis. La plantilla si viaja.
