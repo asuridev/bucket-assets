@@ -8,6 +8,8 @@ levanta y termina imprimiendo credenciales y URLs.
 ./up.sh redis mongo            # directo
 ./up.sh ibm-secret-manager     # solo la emulación de Secrets Manager
 ./up.sh --dry-run all          # solo genera el compose, para revisarlo
+./up.sh --regen-secret ibm-secret-manager   # rehace el secreto del stub desde la plantilla
+./reload-secret.sh             # recarga el secreto editado en el stub, sin recrear el contenedor
 ./down.sh                      # baja el stack (los datos sobreviven)
 ./down.sh -v                   # baja y borra los volúmenes (pide confirmación)
 ```
@@ -59,12 +61,14 @@ que exportar nada.
 ```
 images.json               TODAS las imágenes. Es el único sitio donde se cambia una versión.
 .env                      DEVX_USER / DEVX_HOST. Lo crea up.sh la primera vez. No se commitea.
+reload-secret.sh          Le dice al stub de Secrets Manager que relea el secreto del disco.
 services/*.yaml           Un fragmento de compose por servicio, con marcadores __IMAGE_X__.
 conf/default.conf.template  Plantilla del nginx que sirve mongo-express bajo el subpath.
 conf/mongo-ui.conf        Generada por up.sh con tu prefijo dentro. No se commitea.
 conf/secrets-manager-stub/  Los stubs de WireMock: mappings/iam-token.json y cr-token viajan
-                          tal cual; mappings/secret-kv.json lo genera up.sh desde
-                          secret-kv.json.template y NO se commitea (ver abajo).
+                          tal cual; mappings/secret-kv.json lo genera up.sh la primera vez
+                          desde secret-kv.json.template, luego lo CONSERVA (se edita a
+                          mano) y NO se commitea (ver abajo).
 generated/docker-compose.yaml  Lo que up.sh arma y levanta. No se commitea.
 ```
 
@@ -130,13 +134,14 @@ forma:
 - **La emulación de Secrets Manager no es una UI** y por eso no necesita nada de esto: la
   consume la aplicación por `localhost:8090`, no un navegador a través del proxy.
 
-## El secreto del stub se genera, no se commitea
+## El secreto del stub: se genera una vez, luego se edita a mano
 
-`conf/secrets-manager-stub/mappings/secret-kv.json` sale de `secret-kv.json.template` en cada
-`./up.sh`, sustituyendo las credenciales de MinIO. **No es cosmético**: el secreto lleva dentro
-`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` y son las que el servicio usa de verdad para firmar contra
-MinIO en el perfil `local`. Aquí valen `admin`/`adminadmin`, mientras que el compose de
-`deploy/` usa `minioadmin` — por eso cada entorno tiene su copia y no se comparte el fichero.
+`conf/secrets-manager-stub/mappings/secret-kv.json` sale de `secret-kv.json.template` la **primera
+vez** que se levanta `ibm-secret-manager`, sustituyendo las credenciales de MinIO. **No es
+cosmético**: el secreto lleva dentro `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` y son las que el
+servicio usa de verdad para firmar contra MinIO en el perfil `local`. Aquí valen
+`admin`/`adminadmin`, mientras que el compose de `deploy/` usa `minioadmin` — por eso cada entorno
+tiene su copia y no se comparte el fichero.
 
 Esas credenciales viven en **un solo sitio**, las variables `MINIO_USER`/`MINIO_PASSWORD` de
 `up.sh`, desde donde se sustituyen en `services/minio.yaml`, `services/minio-init.yaml` y la
@@ -149,6 +154,34 @@ prefijo del nginx: servir marcadores literales daría un fallo mucho más tarde 
 La plantilla vive **fuera** de `mappings/` a propósito: WireMock aborta el arranque si encuentra
 ahí un fichero que no sepa parsear.
 
+### Cambiar los valores del secreto
+
+El fichero generado **se conserva**: si ya existe, `./up.sh` no lo toca. Es el sitio donde se
+editan los valores a mano — otras credenciales de MinIO, un `COS_API_KEY` real para probar, un
+`REDIS_PASSWORD`. El ciclo es:
+
+```bash
+vi conf/secrets-manager-stub/mappings/secret-kv.json   # 1. editar
+./reload-secret.sh                                     # 2. que el stub lo relea
+# 3. reiniciar la aplicación
+```
+
+Los tres pasos hacen falta, y cada uno por un motivo distinto:
+
+1. **No hay que recrear el contenedor.** `services/secrets-manager-stub.yaml` monta
+   `../conf/secrets-manager-stub` dentro de `/home/wiremock`, así que el fichero editado ya es el
+   que el contenedor ve. No está horneado en ninguna imagen — de hecho en todo el repo no hay
+   ningún `Dockerfile`.
+2. **Pero WireMock no vigila el disco.** Carga los mappings *en memoria* al arrancar, así que
+   hasta que no se le pide releer sigue sirviendo lo viejo. `reload-secret.sh` hace
+   `POST /__admin/mappings/reset`, que vuelve a cargar los mappings desde disco, y a continuación
+   imprime lo que el stub sirve ahora — que es la única prueba real de que la edición llegó.
+3. **Y la aplicación lee el secreto una sola vez, al arrancar.** `SecretsEnvironmentPostProcessor`
+   no refresca (ver `CLAUDE.md`, sección *Secrets*), así que recargar el stub no basta: hay que
+   reiniciar el servicio Spring Boot.
+
+Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-manager`.
+
 ## Si algo falla
 
 | Síntoma | Causa | Arreglo |
@@ -157,7 +190,9 @@ ahí un fichero que no sepa parsear.
 | mongo-express carga **sin estilos** | El prefijo de `conf/mongo-ui.conf` no coincide con la URL | Volver a lanzar `./up.sh mongo`: lo regenera desde `.env` |
 | Las URLs del resumen llevan otro usuario | `infra/.env` tiene un `DEVX_USER` equivocado | Editarlo y relanzar `./up.sh` |
 | `ERROR: la clave "X" no esta en images.json` | Falta una imagen | Añadirla a `images.json` |
-| La subida da **`503 STORAGE_UNAVAILABLE`** con el stack de infra | El `secret-kv.json` generado no coincide con las credenciales de MinIO | Relanzar `./up.sh ibm-secret-manager`: lo regenera. Comprobar con `grep MINIO conf/secrets-manager-stub/mappings/secret-kv.json` |
+| La subida da **`503 STORAGE_UNAVAILABLE`** con el stack de infra | El `secret-kv.json` no coincide con las credenciales de MinIO | `grep MINIO conf/secrets-manager-stub/mappings/secret-kv.json`. Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-manager` |
+| He editado `secret-kv.json` y el stub sigue sirviendo lo de antes | WireMock tiene los mappings en memoria: no vigila el disco | `./reload-secret.sh` |
+| El stub ya sirve lo nuevo pero la **aplicación** sigue con lo viejo | El secreto se lee una sola vez, al arrancar; no hay refresh | Reiniciar el servicio Spring Boot |
 | La app no arranca: `No se pudo leer el secreto ...` | El stub no está levantado, o el 8090 lo ocupa otro compose | `docker ps`; parar el otro stack, o arrancar con `SECRETS_ENABLED=false` |
 | El stub arranca y muere solo | Un fichero inválido en `conf/secrets-manager-stub/mappings/` | `docker logs infra-secrets-stub`: WireMock dice qué fichero y por qué |
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck no encuentra `mongosh`, casi seguro porque el registro sirvió otra versión bajo ese tag | `docker inspect infra-mongo --format '{{json .State.Health}}'` y `docker exec infra-mongo mongosh --quiet --eval "db.version()"` |
