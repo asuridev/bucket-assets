@@ -275,17 +275,62 @@ fi
 # --- arranque -------------------------------------------------------------------------
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
+  RUNTIME=docker
 elif command -v podman-compose >/dev/null 2>&1; then
   COMPOSE="podman-compose"
+  RUNTIME=podman
 else
   die "no encuentro ni 'docker compose' ni 'podman-compose'"
 fi
+
+# Las imagenes se bajan AQUI, antes del up, y con reintentos. La de Oracle son 1,3 GB de
+# descarga (5,1 GB ya descomprimida), y por el proxy corporativo de DevX se corta sola a media
+# capa ("unexpected EOF"). Cada reintento reaprovecha las capas ya bajadas, asi que avanza; hacerlo
+# dentro del `up` no reintenta nada y ademas deja el fallo enterrado entre las barras de
+# progreso de todos los servicios a la vez.
+pull_image() {
+  n=1
+  while [ "$n" -le 3 ]; do
+    if $RUNTIME pull "$1" >/dev/null; then
+      echo "  $1"
+      return 0
+    fi
+    n=$((n + 1))
+    if [ "$n" -le 3 ]; then
+      echo "  $1 -- fallo, reintento $n de 3 (lo ya descargado se conserva)"
+    fi
+  done
+  return 1
+}
+
+echo
+echo "Descargando imagenes..."
+# Salen del compose ya generado, para no repetir aqui la lista de servicios seleccionados.
+for image in $(grep -E '^    image:' "$COMPOSE_FILE" | awk '{print $2}' | sort -u); do
+  pull_image "$image" || die "no se pudo descargar $image tras 3 intentos.
+  Si el mensaje de arriba es un EOF o un timeout, es la descarga cortandose: vuelve a lanzar
+  ./up.sh y seguira donde lo dejo. Si es un 'unsupported media type' o un 'not found', esa
+  imagen no esta en el mirror corporativo: cambia su clave en infra/images.json."
+done
 
 echo
 # -p infra: sin esto el proyecto tomaria el nombre del directorio (generated/) y los
 # volumenes se llamarian generated_mongo-data. Con nombre fijo, down.sh encuentra siempre
 # lo que up.sh creo.
-$COMPOSE -p infra -f "$COMPOSE_FILE" up -d
+if ! $COMPOSE -p infra -f "$COMPOSE_FILE" up -d; then
+  die "el arranque fallo; el motivo esta justo arriba."
+fi
+
+# Y ademas se comprueba que los contenedores existen de verdad. No sobra: se ha visto un
+# `up -d` terminar con codigo 0 y sin crear nada (con el pull cortado), y entonces el resumen
+# de abajo estaria mintiendo, que es peor que no imprimir nada.
+CREATED=$($RUNTIME ps -a --format '{{.Names}}' 2>/dev/null || true)
+MISSING=""
+for name in $(grep -E '^    container_name:' "$COMPOSE_FILE" | awk '{print $2}'); do
+  echo "$CREATED" | grep -qx "$name" || MISSING="$MISSING $name"
+done
+[ -z "$MISSING" ] || die "el compose termino sin error pero faltan contenedores:$MISSING
+  Revisa la salida de arriba y '$RUNTIME logs <contenedor>'."
 
 # --- resumen --------------------------------------------------------------------------
 echo

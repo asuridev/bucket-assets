@@ -85,6 +85,13 @@ generated/docker-compose.yaml  Lo que up.sh arma y levanta. No se commitea.
 clave en `images.json`. Es a propósito: una imagen vacía produce un compose inválido con un
 error indescifrable.
 
+Y las **descarga antes del `up`**, con tres reintentos, en vez de dejar que el `up` las baje:
+una imagen de varios GB por el proxy corporativo se corta sola a media capa
+(`unexpected EOF`), y al reintentar se reaprovecha lo ya descargado. Después del arranque
+comprueba que los contenedores **existen de verdad** — se ha visto un `up -d` acabar con
+código 0 sin crear nada — y aborta si falta alguno, para que el resumen de credenciales no
+mienta.
+
 Cada fragmento nuevo hay que registrarlo en el bloque de ensamblado de `up.sh`. El de Mongo son
 tres `render`, y el orden importa porque es el que acaba en el compose:
 
@@ -164,8 +171,8 @@ forma:
 comunidad publicadas en Docker Hub: se descargan **sin login y sin aceptar ninguna licencia**,
 a diferencia de las de `container-registry.oracle.com`. Tres cosas de ese tag:
 
-- **`slim`**: sin los componentes que un entorno de desarrollo no usa. Aun asi la imagen ocupa
-  **5,1 GB** en disco, medidos: es Oracle.
+- **`slim`**: sin los componentes que un entorno de desarrollo no usa. Aun asi son **1,3 GB de
+  descarga** y **5,1 GB** ya descomprimida en disco: es Oracle.
 - **`faststart`**: la base viene **ya creada dentro de la imagen**, así que arranca en segundos
   en vez de los ~5 min que tarda una imagen oficial creándola. El precio lo paga el volumen:
   montar `oracle-data` vacío encima hace que la base **se copie** al volumen en el primer
@@ -199,6 +206,24 @@ en este entorno: **conseguir el driver de Oracle**.
 Oracle pide **~1,5-2 GB de RAM**. Si el workspace no da para tanto, es un cambio de dos líneas:
 la clave `oracle` de `images.json` a `gvenzl/oracle-xe:21-slim-faststart` y `ORACLE_SERVICE` de
 `up.sh` a `XEPDB1` (en XE la PDB se llama así).
+
+### Si hiciera falta una imagen más liviana
+
+Tamaños de descarga, medidos contra Docker Hub:
+
+| Imagen | Descarga | Motor | Primer arranque |
+|---|---|---|---|
+| `oracle-free:23.26.3-slim-faststart` (la que usamos) | 1,32 GB | 23ai | segundos |
+| `oracle-free:23.26.3-slim` | 0,85 GB | 23ai | ~5 min: crea la base |
+| `oracle-xe:21.3.0-slim-faststart` | 1,23 GB | 21c | segundos |
+| `oracle-xe:11.2.0.2-slim-faststart` | 0,46 GB | 11g (2011) | segundos |
+
+Bajar a **21c no compensa por tamaño** (90 MB de diferencia); está ahí por RAM, no por disco.
+Quitar **`faststart`** ahorra un 36% de descarga y los 3 GB que se copian al volumen, a cambio
+de crear la base en el primer arranque. **11g XE** es la única realmente pequeña, pero es un
+motor de 2011: sin tipo `JSON`, sin `IDENTITY`, sin `FETCH FIRST n ROWS` y sin PDBs — el
+servicio se llama `XE` a secas, no `XEPDB1`. Vale para pinchar tablas; miente sobre lo que
+acepta un Oracle actual.
 
 ## El secreto del stub: se genera una vez, luego se edita a mano
 
@@ -261,6 +286,7 @@ Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-ma
 | El stub ya sirve lo nuevo pero la **aplicación** sigue con lo viejo | El secreto se lee una sola vez, al arrancar; no hay refresh | Reiniciar el servicio Spring Boot |
 | La app no arranca: `No se pudo leer el secreto ...` | El stub no está levantado, o el 8090 lo ocupa otro compose | `docker ps`; parar el otro stack, o arrancar con `SECRETS_ENABLED=false` |
 | El stub arranca y muere solo | Un fichero inválido en `conf/secrets-manager-stub/mappings/` | `docker logs infra-secrets-stub`: WireMock dice qué fichero y por qué |
+| El pull muere con **`unexpected EOF`** (o un timeout) | El proxy corta la descarga a media capa; la de Oracle son 1,3 GB | Relanzar `./up.sh`: descarga las imágenes con 3 reintentos y reaprovecha las capas ya bajadas, así que cada intento avanza |
 | `infra-oracle` tarda en ponerse `healthy` la primera vez | La imagen `faststart` está copiando la base (~3 GB) al volumen `oracle-data` vacío | Esperar: `docker logs -f infra-oracle` hasta `DATABASE IS READY TO USE!` |
 | DbGate da **`ORA-01017`** | El volumen `oracle-data` ya tenía datos, así que el entrypoint se saltó el init y no creó `APP_USER` | `./down.sh -v` para empezar limpio |
 | DbGate da **`ORA-12514`** (listener no conoce el servicio) | `ORACLE_SERVICE` no coincide con la PDB de la imagen | `FREEPDB1` con `oracle-free`, `XEPDB1` con `oracle-xe` |
