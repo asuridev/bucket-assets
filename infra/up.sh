@@ -7,6 +7,7 @@
 #   ./up.sh redis mongo              directo
 #   ./up.sh ibm-secret-manager       solo la emulacion de Secrets Manager
 #   ./up.sh --dry-run all            solo genera el compose, no levanta
+#   ./up.sh --regen-secret ibm-secret-manager   rehace el secreto del stub desde la plantilla
 #
 # Todas las imagenes salen de images.json, sin excepcion.
 set -e
@@ -68,13 +69,15 @@ prefix_for() { echo "/user/$DEVX_USER/http/$1"; }
 
 # --- argumentos -----------------------------------------------------------------------
 DRY_RUN=no
+REGEN_SECRET=no
 SELECTION=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=yes ;;
+    --regen-secret) REGEN_SECRET=yes ;;
     redis|mongo|minio|ibm-secret-manager) SELECTION="$SELECTION $arg" ;;
     all) SELECTION="redis mongo minio ibm-secret-manager" ;;
-    -h|--help) echo "Uso: $0 [--dry-run] [redis] [mongo] [minio] [ibm-secret-manager] | all"; exit 0 ;;
+    -h|--help) echo "Uso: $0 [--dry-run] [--regen-secret] [redis] [mongo] [minio] [ibm-secret-manager] | all"; exit 0 ;;
     *) die "opcion desconocida: $arg" ;;
   esac
 done
@@ -207,20 +210,35 @@ fi
 # ESTE stack (admin/adminadmin), no las del compose de deploy/ (minioadmin). El servicio las
 # usa de verdad en el perfil local, asi que un valor equivocado no es cosmetico: la subida
 # falla con 503.
+#
+# Se genera SOLO SI FALTA. El fichero esta montado en vivo dentro del contenedor
+# (services/secrets-manager-stub.yaml), asi que es el sitio donde se tocan los valores a mano;
+# regenerarlo en cada ./up.sh borraria esas ediciones sin avisar. Para volver a la plantilla,
+# --regen-secret. Para que el stub lea el fichero editado, ./reload-secret.sh.
 if has ibm-secret-manager; then
-  [ -f "$STUB_TEMPLATE" ] || die "no encuentro $STUB_TEMPLATE"
   mkdir -p "$STUB_DIR/mappings"
-  sed -e "s|__MINIO_USER__|$MINIO_USER|g" \
-      -e "s|__MINIO_PASSWORD__|$MINIO_PASSWORD|g" \
-      "$STUB_TEMPLATE" > "$STUB_SECRET"
-  # Misma comprobacion que la del nginx: si la sustitucion no ocurrio, el stub serviria
-  # marcadores literales y el fallo se veria mucho mas tarde, al subir un archivo.
-  # En forma de `if` y no `grep ... && die`: un AND-OR list cuyo lado izquierdo falla se
-  # comporta distinto segun la shell, y aqui no sabemos cual corre en DevX.
-  if grep -q "__MINIO_" "$STUB_SECRET"; then
-    die "quedaron marcadores sin sustituir en $STUB_SECRET"
+  if [ -f "$STUB_SECRET" ] && [ "$REGEN_SECRET" = no ]; then
+    echo "Secreto del stub conservado en infra/$STUB_SECRET (no se toca: puede tener ediciones)"
+    echo "  rehacerlo desde la plantilla: ./up.sh --regen-secret ibm-secret-manager"
+    echo "  aplicar cambios al stub ya levantado: ./reload-secret.sh"
+  else
+    [ -f "$STUB_TEMPLATE" ] || die "no encuentro $STUB_TEMPLATE"
+    sed -e "s|__MINIO_USER__|$MINIO_USER|g" \
+        -e "s|__MINIO_PASSWORD__|$MINIO_PASSWORD|g" \
+        "$STUB_TEMPLATE" > "$STUB_SECRET"
+    # Misma comprobacion que la del nginx: si la sustitucion no ocurrio, el stub serviria
+    # marcadores literales y el fallo se veria mucho mas tarde, al subir un archivo.
+    # En forma de `if` y no `grep ... && die`: un AND-OR list cuyo lado izquierdo falla se
+    # comporta distinto segun la shell, y aqui no sabemos cual corre en DevX.
+    if grep -q "__MINIO_" "$STUB_SECRET"; then
+      die "quedaron marcadores sin sustituir en $STUB_SECRET"
+    fi
+    if [ "$REGEN_SECRET" = yes ]; then
+      echo "Secreto del stub REGENERADO desde la plantilla en infra/$STUB_SECRET (MinIO: $MINIO_USER)"
+    else
+      echo "Secreto del stub generado en infra/$STUB_SECRET (MinIO: $MINIO_USER)"
+    fi
   fi
-  echo "Secreto del stub generado en infra/$STUB_SECRET (MinIO: $MINIO_USER)"
 fi
 
 if [ "$DRY_RUN" = yes ]; then
@@ -259,7 +277,9 @@ if has ibm-secret-manager; then
   echo " Emulacion de IBM Cloud Secrets Manager   http://localhost:8090"
   echo "   NO es una UI y NO necesita Add Port: la consume la aplicacion, no el navegador."
   echo "   El perfil 'local' ya apunta ahi por defecto, asi que no hay que exportar nada."
-  echo "   Valores del secreto: infra/$STUB_SECRET (se regenera en cada ./up.sh)"
+  echo "   Valores del secreto: infra/$STUB_SECRET"
+  echo "   Ese fichero esta montado en vivo en el contenedor y SE CONSERVA entre ./up.sh:"
+  echo "   editalo y lanza ./reload-secret.sh para que el stub lo relea sin recrear nada."
   echo
 fi
 echo " Conexiones desde OTRO CONTENEDOR de este compose (por nombre de servicio)"
