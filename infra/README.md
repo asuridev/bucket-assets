@@ -6,6 +6,7 @@ levanta y termina imprimiendo credenciales y URLs.
 ```bash
 ./up.sh                        # menú interactivo
 ./up.sh redis mongo            # directo
+./up.sh oracle                 # Oracle + su UI (DbGate)
 ./up.sh ibm-secret-manager     # solo la emulación de Secrets Manager
 ./up.sh --dry-run all          # solo genera el compose, para revisarlo
 ./up.sh --regen-secret ibm-secret-manager   # rehace el secreto del stub desde la plantilla
@@ -16,10 +17,10 @@ levanta y termina imprimiendo credenciales y URLs.
 
 Cada servicio arrastra lo suyo automáticamente: **redis** → Redis Commander, **mongo** →
 mongo-express (con su nginx delante), **minio** → creación del bucket, que se pregunta al vuelo,
-**ibm-secret-manager** → un WireMock que emula IBM Cloud Secrets Manager, con su secreto
-generado a medida de este stack.
+**oracle** → DbGate, **ibm-secret-manager** → un WireMock que emula IBM Cloud Secrets Manager,
+con su secreto generado a medida de este stack.
 
-`all` es los cuatro.
+`all` es los cinco.
 
 > Está pensado **solo para DevX**: siempre resuelve el prefijo `/user/<usuario>/http/<puerto>`
 > con el que ese entorno publica cada puerto. Para trabajar en local están `deploy/` y
@@ -33,6 +34,8 @@ generado a medida de este stack.
 | Redis Commander (UI) | 8081 | `admin` / `admin` |
 | MongoDB | 27017 | `admin` / `admin` |
 | mongo-express (UI) | 8082 | `admin` / `admin` |
+| Oracle | 1521 | `admin` / `admin` (usuario de aplicación, en `FREEPDB1`) |
+| DbGate (UI) | 8083 | `admin` / `admin` |
 | MinIO API | 9000 | `admin` / `adminadmin` |
 | MinIO consola (UI) | 9001 | `admin` / `adminadmin` |
 | Emulación de Secrets Manager | 8090 | sin auth — **no es una UI** |
@@ -48,8 +51,14 @@ volumen con datos previos la base `admin` se quedaría sin ningún usuario y la 
 `mongodb://admin:admin@mongo:27017/?authSource=admin` no autenticaría; el remedio es empezar
 limpio con `./down.sh -v`.
 
+**Y el `admin`/`admin` de Oracle, también**: `APP_USER`/`APP_USER_PASSWORD` crean un usuario
+normal dentro de la PDB `FREEPDB1`, y **solo en la primera inicialización, con el volumen
+`oracle-data` vacío**. Misma trampa que en Mongo y mismo remedio (`./down.sh -v`); el síntoma
+aquí es `ORA-01017`. La contraseña de `SYS`/`SYSTEM` es la misma, pero la UI no la usa: para
+trastear no hace falta `SYSDBA`.
+
 Tras levantar, hay que hacer ***Add Port*** en el panel PORTS de la IDE con cada puerto de UI
-(8081, 8082, 9001). Sin eso no hay forwarded address y la URL da 502.
+(8081, 8082, 8083, 9001). Sin eso no hay forwarded address y la URL da 502.
 
 **El 8090 es la excepción**: la emulación de Secrets Manager no la abre un navegador, la
 consume la aplicación desde el propio workspace por `localhost`. No necesita *Add Port*, y de
@@ -83,6 +92,13 @@ tres `render`, y el orden importa porque es el que acaba en el compose:
 render mongo.yaml
 render mongo-express.yaml
 render mongo-ui-proxy.yaml
+```
+
+El de Oracle son **dos**, no tres: DbGate no necesita nginx delante (ver más abajo).
+
+```sh
+render oracle.yaml
+render oracle-ui.yaml
 ```
 
 ## La versión de MongoDB, y por qué ya no hay `mongo-init`
@@ -129,10 +145,60 @@ forma:
 - **mongo-express** usa rutas absolutas (`/public/…`) → sin ayuda cargaría sin estilos. Por eso
   lleva un nginx delante que reescribe el HTML, y `up.sh` genera su config con el prefijo
   dentro (y verifica que la sustitución ocurrió; si no, aborta).
+- **DbGate** funciona tal cual, como Redis Commander, y por una razón que conviene dejar
+  escrita porque no es evidente: pide sus assets con rutas **relativas** (`build/bundle.js`,
+  `global.css`, sin barra inicial ni `<base href>`) y calcula la URL de su API con
+  `window.location.origin + window.location.pathname`, así que el prefijo se lo da el propio
+  navegador. Por eso **no** lleva nginx delante y **no** se define `WEB_ROOT`, que es su
+  variable de subpath: montaría la app *bajo* el prefijo, y DevX lo recorta antes de reenviar,
+  con lo que todo daría 404. Es el mismo motivo por el que `ME_CONFIG_SITE_BASEURL` no sirve
+  en mongo-express.
 - **MinIO** necesita `MINIO_BROWSER_REDIRECT_URL` con la URL pública completa, o la consola
   redirige a `localhost`.
 - **La emulación de Secrets Manager no es una UI** y por eso no necesita nada de esto: la
   consume la aplicación por `localhost:8090`, no un navegador a través del proxy.
+
+## Oracle: por qué `faststart`, y por qué DbGate
+
+`images.json` fija **`gvenzl/oracle-free:23.26.3-slim-faststart`**. Son las imágenes de la
+comunidad publicadas en Docker Hub: se descargan **sin login y sin aceptar ninguna licencia**,
+a diferencia de las de `container-registry.oracle.com`. Tres cosas de ese tag:
+
+- **`slim`**: sin los componentes que un entorno de desarrollo no usa. Aun asi la imagen ocupa
+  **5,1 GB** en disco, medidos: es Oracle.
+- **`faststart`**: la base viene **ya creada dentro de la imagen**, así que arranca en segundos
+  en vez de los ~5 min que tarda una imagen oficial creándola. El precio lo paga el volumen:
+  montar `oracle-data` vacío encima hace que la base **se copie** al volumen en el primer
+  arranque, **~3 GB** medidos; lo que tarde depende del disco. A partir de ahí, segundos. Se
+  acepta porque es la convención del stack: las bases de datos llevan volumen, las cachés no.
+  La señal de que Oracle está listo es `DATABASE IS READY TO USE!` en
+  `docker logs -f infra-oracle`, **no** que el contenedor aparezca `Up`.
+- **Versión completa fijada** (`23.26.3`) y no `23-slim-faststart`, que es un tag móvil: misma
+  razón por la que `mongo` está fijado.
+
+El **1521 es TCP puro, así que desde DevX no se ve**: ese entorno solo publica HTTP bajo
+subpath. Sirve para conectar desde el propio workspace (JDBC); desde el navegador la única vía
+es la UI. Es exactamente la situación de Redis y de Mongo, y por eso ningún servicio de aquí se
+añade sin su UI.
+
+**La UI es DbGate**, y las dos alternativas se descartaron por lo mismo, que es lo que importa
+en este entorno: **conseguir el driver de Oracle**.
+
+- **DbGate** habla con Oracle en *thin mode*, con un driver JS puro. No necesita Oracle Instant
+  Client ni descargar ningún `.jar`: lo que trae la imagen es todo lo que hace falta. Además la
+  conexión se preconfigura con variables de entorno (`CONNECTIONS`, `ENGINE_ora`, `SERVER_ora`,
+  `SERVICE_NAME_ora`…), así que la UI abre ya conectada, y `LOGIN`/`PASSWORD` le ponen un login
+  propio — sin ellas quedaría abierta a cualquiera del entorno que acierte el puerto.
+- **CloudBeaver** es el cliente más completo, pero baja el `ojdbc` de Maven Central **en
+  caliente**, la primera vez que se conecta. Si el proxy corporativo lo corta, no hay conexión
+  y **no hay forma de meter el jar a mano**: en DevX no hay `exec`.
+- **SQLPad** es el único con soporte nativo de subpath (`SQLPAD_BASE_URL`), pero su driver de
+  Oracle es *thick mode* y exige el Instant Client dentro de la imagen, que la oficial no trae.
+  Habría que construir una propia, y en todo el repo no hay ningún `Dockerfile` a propósito.
+
+Oracle pide **~1,5-2 GB de RAM**. Si el workspace no da para tanto, es un cambio de dos líneas:
+la clave `oracle` de `images.json` a `gvenzl/oracle-xe:21-slim-faststart` y `ORACLE_SERVICE` de
+`up.sh` a `XEPDB1` (en XE la PDB se llama así).
 
 ## El secreto del stub: se genera una vez, luego se edita a mano
 
@@ -195,6 +261,10 @@ Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-ma
 | El stub ya sirve lo nuevo pero la **aplicación** sigue con lo viejo | El secreto se lee una sola vez, al arrancar; no hay refresh | Reiniciar el servicio Spring Boot |
 | La app no arranca: `No se pudo leer el secreto ...` | El stub no está levantado, o el 8090 lo ocupa otro compose | `docker ps`; parar el otro stack, o arrancar con `SECRETS_ENABLED=false` |
 | El stub arranca y muere solo | Un fichero inválido en `conf/secrets-manager-stub/mappings/` | `docker logs infra-secrets-stub`: WireMock dice qué fichero y por qué |
+| `infra-oracle` tarda en ponerse `healthy` la primera vez | La imagen `faststart` está copiando la base (~3 GB) al volumen `oracle-data` vacío | Esperar: `docker logs -f infra-oracle` hasta `DATABASE IS READY TO USE!` |
+| DbGate da **`ORA-01017`** | El volumen `oracle-data` ya tenía datos, así que el entrypoint se saltó el init y no creó `APP_USER` | `./down.sh -v` para empezar limpio |
+| DbGate da **`ORA-12514`** (listener no conoce el servicio) | `ORACLE_SERVICE` no coincide con la PDB de la imagen | `FREEPDB1` con `oracle-free`, `XEPDB1` con `oracle-xe` |
+| `infra-oracle` muere solo, sin log claro | Oracle Free pide ~1,5-2 GB de RAM y el workspace no da para tanto | Cambiar a `gvenzl/oracle-xe:21-slim-faststart` en `images.json` y `ORACLE_SERVICE=XEPDB1` en `up.sh` |
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck no encuentra `mongosh`, casi seguro porque el registro sirvió otra versión bajo ese tag | `docker inspect infra-mongo --format '{{json .State.Health}}'` y `docker exec infra-mongo mongosh --quiet --eval "db.version()"` |
 | mongo-express o la app dan **`Authentication failed`** | El volumen `mongo-data-v8` ya tenía datos, así que el entrypoint se saltó el init y no creó el usuario `admin` | `./down.sh -v` para empezar limpio. A mano: `docker exec -it infra-mongo mongosh` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
 | `infra-mongo` sale con **exit 1** nada más arrancar | Solo está definida una de `MONGO_INITDB_ROOT_USERNAME`/`_PASSWORD`: el entrypoint aborta a propósito en vez de arrancar sin autorización | Revisar `services/mongo.yaml`: las dos o ninguna |

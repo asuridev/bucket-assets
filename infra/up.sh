@@ -29,6 +29,13 @@ STUB_SECRET=$STUB_DIR/mappings/secret-kv.json
 MINIO_USER=admin
 MINIO_PASSWORD=adminadmin   # MinIO rechaza contrasenas de menos de 8 caracteres
 
+# Credenciales de Oracle, tambien en UN solo sitio: up.sh las sustituye en services/oracle.yaml
+# (donde crean el usuario) y en services/oracle-ui.yaml (donde la UI se conecta con ellas).
+# ORACLE_SERVICE es la PDB de la imagen: FREEPDB1 en oracle-free, XEPDB1 en oracle-xe.
+ORACLE_USER=admin
+ORACLE_PASSWORD=admin
+ORACLE_SERVICE=FREEPDB1
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # --- imagenes -------------------------------------------------------------------------
@@ -75,9 +82,9 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=yes ;;
     --regen-secret) REGEN_SECRET=yes ;;
-    redis|mongo|minio|ibm-secret-manager) SELECTION="$SELECTION $arg" ;;
-    all) SELECTION="redis mongo minio ibm-secret-manager" ;;
-    -h|--help) echo "Uso: $0 [--dry-run] [--regen-secret] [redis] [mongo] [minio] [ibm-secret-manager] | all"; exit 0 ;;
+    redis|mongo|minio|oracle|ibm-secret-manager) SELECTION="$SELECTION $arg" ;;
+    all) SELECTION="redis mongo minio oracle ibm-secret-manager" ;;
+    -h|--help) echo "Uso: $0 [--dry-run] [--regen-secret] [redis] [mongo] [minio] [oracle] [ibm-secret-manager] | all"; exit 0 ;;
     *) die "opcion desconocida: $arg" ;;
   esac
 done
@@ -88,7 +95,8 @@ if [ -z "$SELECTION" ]; then
   echo "  1) redis   -> Redis Commander en el 8081"
   echo "  2) mongo   -> mongo-express en el 8082 (con su nginx delante)"
   echo "  3) minio   -> consola de MinIO en el 9001"
-  echo "  4) ibm-secret-manager -> emulacion de Secrets Manager en el 8090 (no es una UI)"
+  echo "  4) oracle  -> DbGate en el 8083"
+  echo "  5) ibm-secret-manager -> emulacion de Secrets Manager en el 8090 (no es una UI)"
   printf "Elige (ej: 1,3  o  all): "
   read -r ANSWER || ANSWER=""
   for item in $(echo "$ANSWER" | tr ',' ' '); do
@@ -96,8 +104,9 @@ if [ -z "$SELECTION" ]; then
       1|redis) SELECTION="$SELECTION redis" ;;
       2|mongo) SELECTION="$SELECTION mongo" ;;
       3|minio) SELECTION="$SELECTION minio" ;;
-      4|ibm-secret-manager) SELECTION="$SELECTION ibm-secret-manager" ;;
-      all) SELECTION="redis mongo minio ibm-secret-manager" ;;
+      4|oracle) SELECTION="$SELECTION oracle" ;;
+      5|ibm-secret-manager) SELECTION="$SELECTION ibm-secret-manager" ;;
+      all) SELECTION="redis mongo minio oracle ibm-secret-manager" ;;
       "") ;;
       *) die "opcion no valida: $item" ;;
     esac
@@ -132,6 +141,10 @@ if has minio; then
   IMG_MINIO=$(image_of minio)
   IMG_MC=$(image_of mc)
 fi
+if has oracle; then
+  IMG_ORACLE=$(image_of oracle)
+  IMG_DBGATE=$(image_of dbgate)
+fi
 if has ibm-secret-manager; then
   IMG_WIREMOCK=$(image_of wiremock)
 fi
@@ -159,6 +172,11 @@ render() {
     -e "s|__MINIO_USER__|$MINIO_USER|g" \
     -e "s|__MINIO_PASSWORD__|$MINIO_PASSWORD|g" \
     -e "s|__BUCKET__|$BUCKET|g" \
+    -e "s|__IMAGE_ORACLE__|$IMG_ORACLE|g" \
+    -e "s|__IMAGE_DBGATE__|$IMG_DBGATE|g" \
+    -e "s|__ORACLE_USER__|$ORACLE_USER|g" \
+    -e "s|__ORACLE_PASSWORD__|$ORACLE_PASSWORD|g" \
+    -e "s|__ORACLE_SERVICE__|$ORACLE_SERVICE|g" \
     "services/$1" >> "$COMPOSE_FILE"
   echo >> "$COMPOSE_FILE"
 }
@@ -179,6 +197,13 @@ if has minio; then
   render minio.yaml
   render minio-init.yaml
   VOLUMES="$VOLUMES minio-data"
+fi
+if has oracle; then
+  # La UI detras de lo que sirve, igual que en mongo. DbGate no lleva volumen: sus conexiones
+  # salen de las variables de entorno, no de su almacen interno.
+  render oracle.yaml
+  render oracle-ui.yaml
+  VOLUMES="$VOLUMES oracle-data"
 fi
 if has ibm-secret-manager; then
   # Sin volumen a proposito: un stub no tiene estado que preservar.
@@ -272,6 +297,7 @@ echo " UIs -- recuerda hacer \"Add Port\" en el panel PORTS de la IDE"
 has redis && printf '   Redis Commander  %-56s admin / admin\n' "$(url_for 8081)"
 has mongo && printf '   mongo-express    %-56s admin / admin\n' "$(url_for 8082)"
 has minio && printf '   MinIO consola    %-56s %s / %s\n' "$(url_for 9001)" "$MINIO_USER" "$MINIO_PASSWORD"
+has oracle && printf '   DbGate           %-56s %s / %s\n' "$(url_for 8083)" "$ORACLE_USER" "$ORACLE_PASSWORD"
 echo
 if has ibm-secret-manager; then
   echo " Emulacion de IBM Cloud Secrets Manager   http://localhost:8090"
@@ -286,14 +312,24 @@ echo " Conexiones desde OTRO CONTENEDOR de este compose (por nombre de servicio)
 has redis && echo "   Redis    redis:6379                                   sin auth"
 has mongo && echo "   MongoDB  mongodb://admin:admin@mongo:27017/?authSource=admin"
 has minio && echo "   MinIO    http://minio:9000   $MINIO_USER / $MINIO_PASSWORD   bucket: $BUCKET"
+has oracle && echo "   Oracle   jdbc:oracle:thin:@//oracle:1521/$ORACLE_SERVICE   $ORACLE_USER / $ORACLE_PASSWORD"
 echo
 echo " Conexiones desde el propio workspace (puertos publicados)"
 has redis && echo "   Redis    localhost:6379"
 has mongo && echo "   MongoDB  mongodb://admin:admin@localhost:27017/?authSource=admin"
 has minio && echo "   MinIO    http://localhost:9000"
+has oracle && echo "   Oracle   jdbc:oracle:thin:@//localhost:1521/$ORACLE_SERVICE   $ORACLE_USER / $ORACLE_PASSWORD"
 echo
 echo " MinIO es la unica excepcion a admin/admin: rechaza contrasenas de menos de 8"
 echo " caracteres, por eso es adminadmin."
+has oracle && echo
+has oracle && echo " El PRIMER ./up.sh oracle tarda mas: la imagen -faststart trae la base ya creada dentro,"
+has oracle && echo " y el volumen oracle-data vacio la obliga a copiarla (~3 GB). La senal de que Oracle esta"
+has oracle && echo " listo es \"DATABASE IS READY TO USE!\" en 'docker logs -f infra-oracle', NO que el"
+has oracle && echo " contenedor aparezca Up."
+has oracle && echo
+has oracle && echo " El usuario $ORACLE_USER lo crea la imagen, y SOLO al inicializar el volumen vacio: igual"
+has oracle && echo " que en mongo, si la UI da ORA-01017 hay que empezar limpio con ./down.sh -v"
 has mongo && echo
 has mongo && echo " El admin/admin de MongoDB lo crea la propia imagen oficial, y SOLO al inicializar"
 has mongo && echo " el volumen mongo-data-v8 vacio. Sobre un volumen que ya tenga datos no se recrea:"

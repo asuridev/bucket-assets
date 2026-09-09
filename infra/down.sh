@@ -23,7 +23,7 @@ case "$1" in
     # Confirmacion explicita: `down -v` es irreversible y se teclea por inercia detras de
     # un `down` normal.
     echo "Esto BORRA los volumenes del stack y todos los datos que contengan:"
-    grep -A 10 '^volumes:' "$COMPOSE_FILE" | grep -E '^  [a-z-]+:' | sed 's/^/   - /' || true
+    grep -A 20 '^volumes:' "$COMPOSE_FILE" | grep -E '^  [a-z-]+:' | sed 's/^/   - /' || true
     echo
     echo "Lo que NO hay que rehacer a mano despues: el usuario admin de MongoDB lo vuelve"
     echo "a crear la propia imagen de Mongo al reinicializar el volumen, y el bucket de MinIO,"

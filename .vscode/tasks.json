@@ -39,7 +39,7 @@
     // estas variantes pasan la seleccion por argumento y no preguntan nada.
     {
       "label": "infra: up all",
-      "detail": "Levanta redis + mongo + minio + ibm-secret-manager (bucket cms-content)",
+      "detail": "Levanta redis + mongo + minio + oracle + ibm-secret-manager (bucket cms-content)",
       "type": "shell",
       "command": "sh ./infra/up.sh all",
       "problemMatcher": [],

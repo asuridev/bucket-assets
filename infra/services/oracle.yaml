@@ -1,0 +1,47 @@
+  oracle:
+    image: __IMAGE_ORACLE__
+    container_name: infra-oracle
+    environment:
+      # Variables de las imagenes de gvenzl (las de Docker Hub, sin login ni aceptar licencia).
+      #
+      # ORACLE_PASSWORD es la de SYS/SYSTEM. APP_USER/APP_USER_PASSWORD crean un usuario normal
+      # dentro de la PDB (FREEPDB1) con su tablespace, que es con el que se conecta la UI: para
+      # trastear no hace falta SYSDBA, y asi un DROP de mas no se lleva por delante la instancia.
+      #
+      # OJO, misma trampa que en mongo.yaml: esto SOLO ocurre en la primera inicializacion, con
+      # el volumen vacio. El entrypoint se salta el init si ya encuentra la base en
+      # /opt/oracle/oradata, asi que sobre un volumen con datos previos estas variables no hacen
+      # nada y un cambio de contrasena aqui no llega a aplicarse nunca. Sintoma: ORA-01017.
+      # Remedio: ./down.sh -v
+      ORACLE_PASSWORD: __ORACLE_PASSWORD__
+      APP_USER: __ORACLE_USER__
+      APP_USER_PASSWORD: __ORACLE_PASSWORD__
+    ports:
+      # Literal, NUNCA "${VAR:-1521}": el compose de DevX no sustituye dentro de ports: y parte
+      # la cadena por los dos puntos, con lo que sale un "invalid literal for int()".
+      #
+      # 1521 es TCP puro, asi que desde DevX NO se ve: ese entorno solo publica HTTP bajo
+      # subpath. Sirve para conectar desde el propio workspace (JDBC, sqlplus si lo hubiera);
+      # desde el navegador la unica via es la UI del 8083.
+      - "1521:1521"
+    volumes:
+      # La imagen guarda aqui los datafiles.
+      #
+      # Efecto secundario del tag -faststart: la base viene ya creada DENTRO de la imagen, y
+      # montar un volumen vacio encima hace que se copie al volumen en el primer arranque:
+      # ~3 GB de disco, medidos. Lo que tarde depende del disco (en un portatil, segundos; en
+      # DevX, mas). Se acepta porque es la convencion del stack: las bases de datos llevan
+      # volumen, las caches no. Quitar esta seccion da un Oracle efimero, sin esa copia.
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      # healthcheck.sh lo trae la propia imagen y comprueba que la instancia esta ABIERTA, no
+      # solo que el listener responde.
+      test:
+        - CMD-SHELL
+        - healthcheck.sh
+      interval: 10s
+      timeout: 10s
+      # Mucho mas holgado que el de mongo: Oracle tarda en abrir la instancia, y el primer
+      # arranque ademas copia la base al volumen.
+      retries: 30
+      start_period: 60s

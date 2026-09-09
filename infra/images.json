@@ -6,5 +6,7 @@
   "nginx": "bitnami/nginx:latest",
   "minio": "minio/minio:RELEASE.2025-04-22T22-12-26Z",
   "mc": "minio/mc:RELEASE.2025-04-16T18-13-26Z",
-  "wiremock": "wiremock/wiremock:3.9.2"
+  "wiremock": "wiremock/wiremock:3.9.2",
+  "oracle": "gvenzl/oracle-free:23.26.3-slim-faststart",
+  "dbgate": "dbgate/dbgate:7.2.6"
 }

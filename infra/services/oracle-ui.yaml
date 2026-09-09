@@ -1,0 +1,48 @@
+  # UI de Oracle. A diferencia de mongo-express, esta SI publica su puerto y NO lleva nginx
+  # delante: DbGate pide todos sus assets con rutas RELATIVAS (build/bundle.js, global.css, sin
+  # barra inicial y sin <base href>) y calcula la URL de su API con
+  # window.location.origin + window.location.pathname, asi que el subpath de DevX le llega ya
+  # resuelto por el navegador. Es el caso facil, el de Redis Commander, no el de mongo-express.
+  #
+  # Por eso NO se define WEB_ROOT, que es la variable de subpath de DbGate: montaria la app bajo
+  # el prefijo, pero DevX RECORTA el prefijo antes de reenviar, asi que todo daria 404. Misma
+  # razon por la que ME_CONFIG_SITE_BASEURL no sirve en mongo-express (DEVX-CLIENTES-WEB.md).
+  #
+  # Si algun dia dejara de cumplirse, el arreglo ya esta escrito: copiar mongo-ui-proxy.yaml y
+  # conf/default.conf.template cambiando puerto y upstream.
+  oracle-ui:
+    image: __IMAGE_DBGATE__
+    container_name: infra-oracle-ui
+    # Solo orden de arranque, NO `condition: service_healthy`: podman-compose lo ignora, y si el
+    # healthcheck fallase la UI no llegaria a levantar nunca. Igual que redis-commander.
+    depends_on:
+      - oracle
+    # Y por eso mismo el restart: puede intentar conectar mientras Oracle todavia se inicializa,
+    # que en el primer arranque son varios minutos.
+    restart: unless-stopped
+    ports:
+      # Literal, ver el comentario de oracle.yaml. DbGate escucha en el 3000 dentro.
+      - "8083:3000"
+    environment:
+      # Conexion preconfigurada: la UI abre ya conectada, sin que nadie teclee un host.
+      # El formato es CONNECTIONS con la lista de ids y luego <PROP>_<id> por cada campo
+      # (packages/api/src/utility/envtools.js). El id es "ora".
+      CONNECTIONS: ora
+      LABEL_ora: Oracle (infra)
+      # El sufijo @dbgate-plugin-oracle no es decorativo: nombra el driver.
+      ENGINE_ora: oracle@dbgate-plugin-oracle
+      SERVER_ora: oracle
+      PORT_ora: "1521"
+      # Oracle se conecta por SERVICIO, no por SID ni por nombre de base: en las imagenes de
+      # gvenzl la PDB donde vive APP_USER es FREEPDB1 (en oracle-xe seria XEPDB1).
+      SERVICE_NAME_ora: __ORACLE_SERVICE__
+      USER_ora: __ORACLE_USER__
+      PASSWORD_ora: __ORACLE_PASSWORD__
+      # Sin DATABASE_ora a proposito: eso activaria el modo "una sola base" y ocultaria el
+      # selector de esquemas, que es justo lo que se quiere mirar.
+      #
+      # Login de la propia UI. DbGate activa el proveedor de autenticacion por variables de
+      # entorno en cuanto ve LOGIN+PASSWORD (packages/api/src/auth/authProvider.js). Sin ellas
+      # la UI queda abierta a cualquiera del entorno que acierte el puerto.
+      LOGIN: __ORACLE_USER__
+      PASSWORD: __ORACLE_PASSWORD__
