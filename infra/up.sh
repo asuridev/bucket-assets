@@ -283,8 +283,8 @@ else
   die "no encuentro ni 'docker compose' ni 'podman-compose'"
 fi
 
-# Las imagenes se bajan AQUI, antes del up, y con reintentos. La de Oracle son 1,3 GB de
-# descarga (5,1 GB ya descomprimida), y por el proxy corporativo de DevX se corta sola a media
+# Las imagenes se bajan AQUI, antes del up, y con reintentos. La de Oracle son 0,85 GB de
+# descarga (1,97 GB ya descomprimida), y por el proxy corporativo de DevX se corta sola a media
 # capa ("unexpected EOF"). Cada reintento reaprovecha las capas ya bajadas, asi que avanza; hacerlo
 # dentro del `up` no reintenta nada y ademas deja el fallo enterrado entre las barras de
 # progreso de todos los servicios a la vez.
@@ -376,10 +376,10 @@ echo
 echo " MinIO es la unica excepcion a admin/admin: rechaza contrasenas de menos de 8"
 echo " caracteres, por eso es adminadmin."
 has oracle && echo
-has oracle && echo " El PRIMER ./up.sh oracle tarda mas: la imagen -faststart trae la base ya creada dentro,"
-has oracle && echo " y el volumen oracle-data vacio la obliga a copiarla (~3 GB). La senal de que Oracle esta"
-has oracle && echo " listo es \"DATABASE IS READY TO USE!\" en 'docker logs -f infra-oracle', NO que el"
-has oracle && echo " contenedor aparezca Up."
+has oracle && echo " El PRIMER ./up.sh oracle tarda algo mas: la imagen descomprime los datafiles en el volumen"
+has oracle && echo " oracle-data (~7 s, 3,0 GB). Necesitas ~5 GB libres en el disco de Docker, no en \$HOME."
+has oracle && echo " La senal de que Oracle esta listo es \"DATABASE IS READY TO USE!\" en"
+has oracle && echo " 'docker logs -f infra-oracle', NO que el contenedor aparezca Up."
 has oracle && echo
 has oracle && echo " El usuario $ORACLE_USER lo crea la imagen, y SOLO al inicializar el volumen vacio: igual"
 has oracle && echo " que en mongo, si la UI da ORA-01017 hay que empezar limpio con ./down.sh -v"

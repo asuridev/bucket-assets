@@ -165,23 +165,28 @@ forma:
 - **La emulación de Secrets Manager no es una UI** y por eso no necesita nada de esto: la
   consume la aplicación por `localhost:8090`, no un navegador a través del proxy.
 
-## Oracle: por qué `faststart`, y por qué DbGate
+## Oracle: por qué **sin** `faststart`, y por qué DbGate
 
-`images.json` fija **`gvenzl/oracle-free:23.26.3-slim-faststart`**. Son las imágenes de la
-comunidad publicadas en Docker Hub: se descargan **sin login y sin aceptar ninguna licencia**,
-a diferencia de las de `container-registry.oracle.com`. Tres cosas de ese tag:
+`images.json` fija **`gvenzl/oracle-free:23.26.3-slim`**. Son las imágenes de la comunidad
+publicadas en Docker Hub: se descargan **sin login y sin aceptar ninguna licencia**, a
+diferencia de las de `container-registry.oracle.com`. Dos cosas de ese tag:
 
-- **`slim`**: sin los componentes que un entorno de desarrollo no usa. Aun asi son **1,3 GB de
-  descarga** y **5,1 GB** ya descomprimida en disco: es Oracle.
-- **`faststart`**: la base viene **ya creada dentro de la imagen**, así que arranca en segundos
-  en vez de los ~5 min que tarda una imagen oficial creándola. El precio lo paga el volumen:
-  montar `oracle-data` vacío encima hace que la base **se copie** al volumen en el primer
-  arranque, **~3 GB** medidos; lo que tarde depende del disco. A partir de ahí, segundos. Se
-  acepta porque es la convención del stack: las bases de datos llevan volumen, las cachés no.
-  La señal de que Oracle está listo es `DATABASE IS READY TO USE!` en
-  `docker logs -f infra-oracle`, **no** que el contenedor aparezca `Up`.
-- **Versión completa fijada** (`23.26.3`) y no `23-slim-faststart`, que es un tag móvil: misma
-  razón por la que `mongo` está fijado.
+- **`slim`**: sin los componentes que un entorno de desarrollo no usa. Aun así son **0,85 GB de
+  descarga** y **1,97 GB** ya descomprimida: es Oracle.
+- **Sin `faststart`, y eso es deliberado.** Parece la opción obvia — la variante `-faststart`
+  trae la base ya desplegada dentro de la imagen — pero con un volumen montado encima la base
+  acaba **almacenada dos veces**: 5,12 GB de imagen **más** 3,0 GB de volumen, frente a
+  1,97 + 3,0. En un workspace de DevX esos ~3 GB de más son la diferencia entre arrancar y un
+  `no space left on device` a mitad de `sysaux01.dbf`. Y lo que se paga a cambio es poco: la
+  imagen `slim` trae los datafiles comprimidos y los descomprime en el primer arranque en
+  **7 segundos** (medido: `LISTA en 21s` de principio a fin). No crea la base desde cero, que
+  es lo que sí tardaría minutos.
+- **Versión completa fijada** (`23.26.3`) y no `23-slim`, que es un tag móvil: misma razón por
+  la que `mongo` está fijado.
+
+Ocupación total en el disco de Docker: **~5,0 GB** (1,97 de imagen + 3,0 de volumen), más
+470 MB de DbGate. La señal de que Oracle está listo es `DATABASE IS READY TO USE!` en
+`docker logs -f infra-oracle`, **no** que el contenedor aparezca `Up`.
 
 El **1521 es TCP puro, así que desde DevX no se ve**: ese entorno solo publica HTTP bajo
 subpath. Sirve para conectar desde el propio workspace (JDBC); desde el navegador la única vía
@@ -209,21 +214,19 @@ la clave `oracle` de `images.json` a `gvenzl/oracle-xe:21-slim-faststart` y `ORA
 
 ### Si hiciera falta una imagen más liviana
 
-Tamaños de descarga, medidos contra Docker Hub:
+Todo medido, no estimado: descarga contra la API de Docker Hub, imagen y volumen con
+`podman images` y `du -sh` dentro del contenedor.
 
-| Imagen | Descarga | Motor | Primer arranque |
-|---|---|---|---|
-| `oracle-free:23.26.3-slim-faststart` (la que usamos) | 1,32 GB | 23ai | segundos |
-| `oracle-free:23.26.3-slim` | 0,85 GB | 23ai | ~5 min: crea la base |
-| `oracle-xe:21.3.0-slim-faststart` | 1,23 GB | 21c | segundos |
-| `oracle-xe:11.2.0.2-slim-faststart` | 0,46 GB | 11g (2011) | segundos |
+| Imagen | Descarga | Imagen | + volumen | Motor |
+|---|---|---|---|---|
+| `oracle-free:23.26.3-slim` (la que usamos) | 0,85 GB | 1,97 GB | **5,0 GB** | 23ai |
+| `oracle-free:23.26.3-slim-faststart` | 1,32 GB | 5,12 GB | **8,1 GB** | 23ai |
+| `oracle-xe:11.2.0.2-slim-faststart` | 0,46 GB | 1,64 GB | ~2,6 GB | 11g (2011) |
 
-Bajar a **21c no compensa por tamaño** (90 MB de diferencia); está ahí por RAM, no por disco.
-Quitar **`faststart`** ahorra un 36% de descarga y los 3 GB que se copian al volumen, a cambio
-de crear la base en el primer arranque. **11g XE** es la única realmente pequeña, pero es un
-motor de 2011: sin tipo `JSON`, sin `IDENTITY`, sin `FETCH FIRST n ROWS` y sin PDBs — el
-servicio se llama `XE` a secas, no `XEPDB1`. Vale para pinchar tablas; miente sobre lo que
-acepta un Oracle actual.
+La columna que importa en DevX es la tercera: es lo que acaba en el disco de Docker. **11g XE**
+es la única realmente pequeña, pero es un motor de 2011: sin tipo `JSON`, sin `IDENTITY`, sin
+`FETCH FIRST n ROWS` y sin PDBs — el servicio se llama `XE` a secas, no `XEPDB1`. Vale para
+pinchar tablas; miente sobre lo que acepta un Oracle actual.
 
 ## El secreto del stub: se genera una vez, luego se edita a mano
 
@@ -286,6 +289,7 @@ Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-ma
 | El stub ya sirve lo nuevo pero la **aplicación** sigue con lo viejo | El secreto se lee una sola vez, al arrancar; no hay refresh | Reiniciar el servicio Spring Boot |
 | La app no arranca: `No se pudo leer el secreto ...` | El stub no está levantado, o el 8090 lo ocupa otro compose | `docker ps`; parar el otro stack, o arrancar con `SECRETS_ENABLED=false` |
 | El stub arranca y muere solo | Un fichero inválido en `conf/secrets-manager-stub/mappings/` | `docker logs infra-secrets-stub`: WireMock dice qué fichero y por qué |
+| **`no space left on device`** al crear el volumen | Se llenó el disco de **Docker**, que en DevX no es el mismo que el `$HOME` que muestra la barra de estado. Oracle necesita ~5 GB ahí | `./down.sh -v` para soltar el volumen a medias, `docker system df` para ver qué ocupa y `docker image prune -a` para tirar imágenes de stacks viejos |
 | El pull muere con **`unexpected EOF`** (o un timeout) | El proxy corta la descarga a media capa; la de Oracle son 1,3 GB | Relanzar `./up.sh`: descarga las imágenes con 3 reintentos y reaprovecha las capas ya bajadas, así que cada intento avanza |
 | `infra-oracle` tarda en ponerse `healthy` la primera vez | La imagen `faststart` está copiando la base (~3 GB) al volumen `oracle-data` vacío | Esperar: `docker logs -f infra-oracle` hasta `DATABASE IS READY TO USE!` |
 | DbGate da **`ORA-01017`** | El volumen `oracle-data` ya tenía datos, así que el entrypoint se saltó el init y no creó `APP_USER` | `./down.sh -v` para empezar limpio |

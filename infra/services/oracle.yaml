@@ -27,11 +27,12 @@
     volumes:
       # La imagen guarda aqui los datafiles.
       #
-      # Efecto secundario del tag -faststart: la base viene ya creada DENTRO de la imagen, y
-      # montar un volumen vacio encima hace que se copie al volumen en el primer arranque:
-      # ~3 GB de disco, medidos. Lo que tarde depende del disco (en un portatil, segundos; en
-      # DevX, mas). Se acepta porque es la convencion del stack: las bases de datos llevan
-      # volumen, las caches no. Quitar esta seccion da un Oracle efimero, sin esa copia.
+      # La imagen trae los datafiles COMPRIMIDOS y los descomprime aqui en el primer arranque
+      # (~7 s, 3,0 GB en el volumen, medidos). Por eso la imagen es la -slim y NO la
+      # -slim-faststart: aquella lleva la base ya descomprimida dentro, y con un volumen
+      # montado encima acaba almacenada DOS veces -- 5,1 GB de imagen mas 3,0 GB de volumen,
+      # frente a 1,97 + 3,0. En DevX eso es un 'no space left on device'. Lo que se paga a
+      # cambio son 7 segundos.
       - oracle-data:/opt/oracle/oradata
     healthcheck:
       # healthcheck.sh lo trae la propia imagen y comprueba que la instancia esta ABIERTA, no
