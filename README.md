@@ -218,7 +218,7 @@ Se conserva la arquitectura hexagonal de `main`, con un solo caso de uso:
 ```
 domain/
   values/ValueGenerator            El puerto: dado un id, un valor
-  errors/                          La jerarquia base + InvalidUuidHeaderError
+  errors/                          La jerarquia base de errores de dominio
 application/
   queries/GetCachedValueQuery
   usecases/GetCachedValueQueryHandler
@@ -229,7 +229,6 @@ infrastructure/
   rest/controllers/cache/v1/       El endpoint
   configurations/cache/            RedisCacheManager y el errorHandler
   secrets/                         Lectura de los secretos al arrancar
-  correlation/, web/               correlation_id en el MDC
 ```
 
 **La caché decora el puerto, no el caso de uso.** Es la misma decisión que en `main`, y es lo que

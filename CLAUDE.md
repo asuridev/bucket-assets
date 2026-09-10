@@ -54,7 +54,7 @@ class, use these annotations, not `@Component`/`@Service`.
 ```
 domain/
   values/ValueGenerator          The port: given an id, a value
-  errors/                        Base hierarchy + InvalidUuidHeaderError
+  errors/                        Base domain error hierarchy
 application/
   queries/GetCachedValueQuery
   usecases/GetCachedValueQueryHandler
@@ -65,7 +65,6 @@ infrastructure/
   rest/controllers/cache/v1/     The endpoint
   configurations/cache/          RedisCacheManager + TTL properties
   secrets/                       Secrets read at startup
-  correlation/, web/             correlation_id into the MDC
 ```
 
 Controllers depend only on `UseCaseMediator`, never on handlers directly.
