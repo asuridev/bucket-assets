@@ -309,6 +309,18 @@ El secreto se lee **una vez, al arrancar**. Si DevOps rota el service credential
 
 El detalle de estas cuatro está en [`credenciales-ibm-cloud.md`](credenciales-ibm-cloud.md) §10.4.
 
+Y tres más, que salen de revisar la plantilla de despliegue (README §8):
+
+5. **¿Qué rutas están configuradas como *liveness* y *readiness probe*** en Code Engine? Es lo
+   que decide si el `/actuator/health` puede tocarse o no. Hoy la aplicación sirve las tres
+   estándar.
+6. **¿El despliegue adjunta el agente de OpenTelemetry** y levanta el colector en el `13133`? De
+   eso depende adoptar o descartar del todo `OpenTelemetryColectorHealth` y el `logback-spring.xml`
+   de la plantilla — y, si se adopta el indicador sin colector, el health se va a `DOWN` y el pod
+   se reinicia en bucle.
+7. **¿El escaneo de seguridad exige algo más** además de las dos cabeceras y el `application/json`
+   del actuator que ya se implementaron?
+
 ---
 
 ## 7. Si algo falla

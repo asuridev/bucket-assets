@@ -11,9 +11,6 @@ spring:
     name: content-ms
   lifecycle:
     timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
-  threads:
-    virtual:
-      enabled: true
   profiles:
     active: ${PROFILE:local}
   jackson:
