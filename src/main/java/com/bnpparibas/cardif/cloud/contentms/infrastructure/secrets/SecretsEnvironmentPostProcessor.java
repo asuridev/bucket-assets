@@ -95,6 +95,33 @@ public class SecretsEnvironmentPostProcessor implements EnvironmentPostProcessor
                         "secrets.enabled=true pero no hay configuracion secrets.*."
                                 + " Revisa parameters/<perfil>/secrets.yaml"));
 
+        addKvSecret(environment, properties);
+        addRedisCredentials(environment, binder, properties);
+    }
+
+    /**
+     * El secreto {@code kv}, que trae las credenciales del COS.
+     *
+     * <p><b>Es opcional.</b> Con {@code secrets.name} vacio no se lee, y las credenciales del
+     * COS tienen que llegar por variable de entorno o de donde sea que las ponga ese despliegue.
+     * Es la misma convencion de "vacio = no aplica" que usa {@code secrets.redis.group}.
+     *
+     * <p>Existe ese hueco porque un servicio puede no tener ningun {@code kv}: si todas sus
+     * credenciales llegan como service credentials —Redis, Mongo, o el propio COS el dia que
+     * DevOps lo entregue asi—, este secreto sobra. El proyecto de referencia
+     * ({@code ap6616-cos-documents-ms-app-repo}) es exactamente ese caso. Ver
+     * credenciales-ibm-cloud.md §10.
+     *
+     * <p>Que se salte deja traza en el log: un despliegue sin credenciales del COS falla mucho
+     * mas tarde, con un 503 en la primera subida, y conviene poder mirar el arranque y verlo.
+     */
+    private void addKvSecret(ConfigurableEnvironment environment, SecretsProperties properties) {
+        if (!SecretsManagerClients.hasText(properties.name())) {
+            log.info("Sin secreto kv (secrets.name vacio): las credenciales del COS tienen que"
+                    + " llegar por variable de entorno");
+            return;
+        }
+
         Map<String, Object> secret = source(properties).fetch();
 
         // addLast, no addFirst: una variable de entorno real pisa al secreto.
@@ -105,8 +132,6 @@ public class SecretsEnvironmentPostProcessor implements EnvironmentPostProcessor
         log.info(String.format("Secrets Manager: %d claves cargadas del secreto '%s' (grupo '%s') %s",
                 secret.size(), properties.name(), properties.group(),
                 new TreeSet<>(secret.keySet())));
-
-        addRedisCredentials(environment, binder, properties);
     }
 
     /**

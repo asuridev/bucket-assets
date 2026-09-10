@@ -267,7 +267,7 @@ Del acceso a Secrets Manager:
 | `SECRETS_ENABLED` | `true` | A `false` desactiva Secrets Manager por completo |
 | `SECRETS_URL` | `http://localhost:8090` en `local`; **sin default** en `develop`/`production` | Endpoint de la instancia |
 | `SECRETS_IAM_URL` | `http://localhost:8090` en `local`; `https://iam.cloud.ibm.com` en el resto | Emisor del token. Admite la forma base y la completa (`.../identity/token`): el SDK normaliza las dos |
-| `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto |
+| `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto. **Vacio = no hay secreto `kv`** y no se lee ninguno: para un servicio cuyas credenciales llegan todas como service credentials, este sobra (credenciales-ibm-cloud.md §10.1) |
 | `SECRETS_GROUP` | `default` | Grupo que lo contiene |
 
 Y las del **service credential de Redis**, que es un secreto aparte (§10):

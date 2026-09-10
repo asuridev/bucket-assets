@@ -245,6 +245,7 @@ Las del COS (`COS_ENDPOINT`, `COS_BUCKET_CMS_CONTENT`, `COS_LOCATION`) no cambia
 | Variable | Cuándo ponerla |
 |---|---|
 | `SECRETS_REDIS_NAME` | Si el secreto no se llama `contentms-redis-credentials` |
+| `SECRETS_NAME` | Vacía si el servicio **no tiene secreto `kv`** (todas sus credenciales llegan como service credentials). Ver credenciales-ibm-cloud.md §10.1 |
 | `SECRETS_REDIS_GROUP` | Solo si vive en un grupo distinto al del secreto `kv` |
 
 > **La duda habitual: ¿`SECRETS_GROUP` o `SECRETS_REDIS_GROUP`?** Las dos, pero apuntan a

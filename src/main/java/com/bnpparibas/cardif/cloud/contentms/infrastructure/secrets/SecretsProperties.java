@@ -22,7 +22,10 @@ package com.bnpparibas.cardif.cloud.contentms.infrastructure.secrets;
  *                       Es el <b>unico</b> secreto que sigue viajando como variable de
  *                       entorno: es la llave con la que se abre el resto, asi que no puede
  *                       estar dentro de lo que abre. Ver secret-manager.md §4
- * @param name           nombre del secreto {@code kv} a leer
+ * @param name           nombre del secreto {@code kv} a leer. <b>Vacio = no hay secreto
+ *                       {@code kv}</b> y no se lee ninguno: para un servicio cuyas
+ *                       credenciales llegan todas como service credentials, este secreto
+ *                       sobra. Ver credenciales-ibm-cloud.md §10
  * @param group          grupo de secretos que lo contiene
  * @param redis          el service credential de Redis, que es un secreto APARTE. Ver
  *                       {@link RedisSecret}

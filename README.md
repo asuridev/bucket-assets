@@ -355,7 +355,7 @@ y apuntan al stub del compose. Explicación completa en [secret-manager.md](secr
 | `SECRETS_ENABLED` | `true` | A `false` desactiva Secrets Manager: los secretos vuelven a ser variables de entorno |
 | `SECRETS_URL` | `http://localhost:8090` en `local`; **sin default** fuera | Endpoint de la instancia |
 | `SECRETS_IAM_URL` | `http://localhost:8090` en `local`; `https://iam.cloud.ibm.com` fuera | Emisor del token IAM |
-| `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto |
+| `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto `kv`. Vacío = no hay `kv` y no se lee ninguno |
 | `SECRETS_GROUP` | `default` | Grupo que contiene el secreto `kv`. El del service credential de Redis lo hereda si `SECRETS_REDIS_GROUP` va vacía |
 | `IBM_CLOUD_API_KEY` | valor falso en `local`; **sin default** fuera | La API key con la que se lee el secreto. Es la única credencial que sigue siendo variable de entorno plana, y es la llave con la que se abren las demás |
 

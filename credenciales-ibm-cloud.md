@@ -743,39 +743,81 @@ tocar código por cada secreto nuevo. Son dos posturas legítimas y opuestas.
 
 ---
 
-## 10. Qué haría falta aquí para leer dos `service_credentials`
+## 10. Varios service credentials, y un servicio sin `kv`
+
+Hoy ContentMS lee **dos secretos** de distinto tipo: el `kv` con las credenciales del COS y un
+`service_credentials` con la conexión a Redis. Cada uno tiene su origen y su fuente de
+propiedades:
 
 ```mermaid
 flowchart TD
     EPP["SecretsEnvironmentPostProcessor"]
-    EPP -->|"1ª llamada"| S1["secreto 'cos-credentials'<br/>service_credentials"]
-    EPP -->|"2ª llamada"| S2["secreto 'redis-credentials'<br/>service_credentials"]
-    S1 --> P1["parser del COS<br/>apikey, resource_instance_id"]
+    EPP -->|"1ª llamada (opcional)"| S1["secreto 'contentms-secrets'<br/>kv"]
+    EPP -->|"2ª llamada (si hay caché)"| S2["secreto 'contentms-redis-credentials'<br/>service_credentials"]
+    S1 --> P1["sin mapeo:<br/>las claves ya se llaman<br/>como las variables"]
     S2 --> P2["parser de Redis<br/>connection.rediss.*<br/>+ truststore del certificado"]
-    P1 --> ENV["Environment<br/>storage.api-key, spring.data.redis.*"]
+    P1 --> ENV["Environment"]
     P2 --> ENV
 ```
 
-*En prosa:* dos lecturas y dos parsers distintos, cuyos resultados se traducen a las propiedades
-que los YAML ya esperan. El resto de la aplicación no se enteraría.
+*En prosa:* dos lecturas independientes, con tratamientos distintos. El `kv` se vuelca tal cual
+porque sus claves ya se llaman como las variables de los YAML; el service credential hay que
+navegarlo y traducirlo. Sus resultados van a dos fuentes de propiedades separadas, para que un
+fallo diga cuál de los dos secretos fue.
 
-El trabajo se concentraría en cuatro sitios:
+### 10.1 El `kv` es opcional
 
-1. **`IbmSecretsManagerSource`** — el `secretType`, la aserción de tipo y el `return
-   secret.getData()`, que pasaría a ser un mapeo por servicio.
-2. **`SecretsEnvironmentPostProcessor`** — un bucle sobre N secretos. Registrar un
-   `PropertySource` por secreto en vez de uno solo da mejores mensajes de error: se sabe cuál
-   falló.
-3. **La forma de `secrets.*` en los YAML** y su tabla de variables — pasaría de un `name`/`group`
-   a una lista, con lo que hay que decidir si los dos son obligatorios o solo uno.
-4. **El stub local**: el segmento `secret_types/kv` está fijo en cinco sitios —
-   `deploy/secrets-manager-stub/mappings/secret-kv.json`,
-   `infra/conf/secrets-manager-stub/mappings/secret-kv.json`, su `.template`, el `SECRET_PATH` de
-   `infra/reload-secret.sh` y las constantes de fichero de `infra/up.sh`.
+**`secrets.name` vacío significa "no hay secreto `kv`"**, y entonces no se lee ninguno. Es la
+misma convención de "vacío = no aplica" que usa `secrets.redis.group`.
+
+Existe ese hueco porque **un servicio puede no tener ningún `kv`**. Si todas sus credenciales
+llegan como service credentials —Redis, Mongo, o el propio COS el día que DevOps lo entregue
+así—, ese secreto sobra y `SECRETS_NAME`/`SECRETS_GROUP` dejan de tener sentido. No es
+hipotético: el proyecto de referencia (`ap6616-cos-documents-ms-app-repo`) es exactamente ese
+caso — sus cuatro parámetros son la URL, el nombre y el grupo de **un service credential**, y la
+API key. Ningún `kv`.
+
+Que se salte deja traza en el arranque, a propósito:
+
+```
+Sin secreto kv (secrets.name vacio): las credenciales del COS tienen que llegar por variable de entorno
+```
+
+Un despliegue sin credenciales del COS no falla al arrancar: falla mucho más tarde, con un 503
+en la primera subida. Conviene poder mirar el log y ver que fue deliberado.
+
+### 10.2 Lo que sí costaría: N servicios
+
+Leer más secretos es un bucle, y es la parte fácil. **Lo que no se generaliza es el mapeo.**
+
+Secrets Manager garantiza el envoltorio —`credentials` en la raíz, comprobado contra el modelo
+del SDK (§7)— pero de ahí para dentro la forma la fija **el servicio enlazado**, y para el SDK
+es un objeto libre:
+
+```java
+connection.get("rediss")    // hosts[1], authentication, certificate, database
+connection.get("mongodb")   // hosts[N] (replica set), authentication, database
+```
+
+Mongo trae varios hosts porque es un replica set —el código de referencia fija `host1`, `host2`,
+`host3`—, Redis trae uno y además un certificado que hay que convertir en truststore. No hay un
+mapeo común: **un parser por servicio**, y cada uno traduce a las propiedades que espera su
+cliente (`spring.data.redis.*`, `spring.data.mongodb.*`, `storage.*`).
+
+Así que un servicio "todo service credentials" necesitaría, además de lo que ya hay:
+
+1. una **lista** de secretos en configuración, en vez de bloques fijos;
+2. un **parser por servicio**, que es donde está el trabajo real;
+3. el bucle en el post-processor, que es trivial;
+4. tantos mappings en el stub local como secretos, cada uno con su `urlPath` literal.
 
 Nada de esto toca `domain` ni `application`, que no saben que Redis ni Secrets Manager existen.
 
----
+> **Cuándo construir eso: cuando haya un segundo service credential de verdad, no antes.** Con
+> uno solo, cualquier abstracción es una conjetura sobre cómo será el siguiente. Hay precedente
+> en este mismo trabajo: la duda de si `credentials` colgaba de la raíz se resolvió mirando el
+> SDK en diez minutos, no razonando en abstracto. Con el payload de Mongo delante pasará lo
+> mismo, y probablemente la forma correcta sea más simple de lo que se diseñaría a ciegas.
 
 ## 11. Cómo se ensaya todo esto en local
 
