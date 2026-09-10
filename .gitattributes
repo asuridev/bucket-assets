@@ -6,3 +6,10 @@
 # bloque literal de YAML, y ese texto llega tal cual al contenedor. Con CRLF, el heredoc
 # y el `for` de dentro se rompen igual que un .sh mal convertido.
 infra/services/*.yaml text eol=lf
+
+# El wrapper de Maven, por el mismo motivo y con la misma trampa: mvnw NO acaba en .sh, asi
+# que la regla de arriba no lo cubre. Con CRLF, el shebang deja de serlo (queda un CR al final) y tanto
+# Git Bash como DevX contestan "bad interpreter". El .cmd es justo al reves: lo lee cmd.exe.
+mvnw text eol=lf
+mvnwDebug text eol=lf
+mvnw.cmd text eol=crlf
