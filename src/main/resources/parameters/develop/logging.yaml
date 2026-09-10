@@ -2,5 +2,3 @@ logging:
   level:
     root: ${LOG_LEVEL_ROOT:WARN}
     com.bnpparibas.cardif.cloud.contentms: ${LOG_LEVEL_APP:INFO}
-  pattern:
-    correlation: "[%X{correlationId:-} %X{requestId:-}] "

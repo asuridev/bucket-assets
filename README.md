@@ -218,7 +218,7 @@ Se conserva la arquitectura hexagonal de `main`, con un solo caso de uso:
 ```
 domain/
   values/ValueGenerator            El puerto: dado un id, un valor
-  errors/                          La jerarquia base + InvalidUuidHeaderError
+  errors/                          La jerarquia base de errores de dominio
 application/
   queries/GetCachedValueQuery
   usecases/GetCachedValueQueryHandler
@@ -229,7 +229,6 @@ infrastructure/
   rest/controllers/cache/v1/       El endpoint
   configurations/cache/            RedisCacheManager y el errorHandler
   secrets/                         Lectura de los secretos al arrancar
-  correlation/, web/               correlation_id en el MDC
 ```
 
 **La caché decora el puerto, no el caso de uso.** Es la misma decisión que en `main`, y es lo que
@@ -245,3 +244,46 @@ pide el valor y no sabe si vino de la caché o se acaba de generar.
 - Sin suite de tests: `src/test` no existe, igual que en `main`.
 
 `infra/` es idéntico a `main` a propósito: el mismo stack local sirve para las dos ramas.
+
+---
+
+## 8. Preparación para el despliegue
+
+DevOps entrega una plantilla (starter `ap13002-content-ms-app-repo`, rama `release-v6.5.2`) con
+siete ficheros. **De ella se adoptan dos**, los que exige el escaneo de seguridad.
+
+### Lo que se adoptó
+
+| Fichero | Qué hace |
+|---|---|
+| `infrastructure/configurations/ActuatorEndpointConfig` | Los endpoints del actuator responden `application/json` en vez del media type propietario `application/vnd.spring-boot.actuator.v3+json` |
+| `infrastructure/web/AddResponseHeaderFilter` | Añade `X-Content-Type-Options: nosniff` y `Cross-Origin-Resource-Policy: same-origin` a **toda** respuesta |
+
+Ninguno de los dos añade dependencias: el `pom.xml` no cambia.
+
+Comprobado antes de aplicarlos, para no darlo por supuesto: `/actuator/health` devolvía
+`Content-Type: application/vnd.spring-boot.actuator.v3+json` y ninguna de las dos cabeceras.
+
+### Lo que NO se adoptó, y por qué
+
+| Fichero | Motivo |
+|---|---|
+| `HelloResource` | Endpoint de demostración del starter. `/v1/cache/{id}` ya cumple ese papel |
+| `TimedAspectConfig` | Solo sirve con `@Timed`, que no se usa, y necesita `spring-boot-starter-aop`, eliminado a propósito de este proyecto |
+| `OpenTelemetryColectorHealth` + `OpenTelemetryColector` | Requiere Lombok, que el proyecto no usa — y ver el aviso de abajo |
+| `logback-spring.xml` | Necesita `opentelemetry-logback-appender`, y su patrón usa `%X{x-request-id}`: correlación, que se eliminó de esta rama |
+
+### Sobre el health: la preocupación era la contraria
+
+**La plantilla no define ningún endpoint de health custom.** `OpenTelemetryColectorHealth` es un
+*contribuidor* dentro de `/actuator/health`, no una ruta nueva. Las rutas siguen siendo las
+estándar, y **esta rama ya sirve las tres** (`/actuator/health`, `/health/liveness`,
+`/health/readiness`) en los tres perfiles.
+
+El riesgo real va al revés: ese indicador consulta un colector en `http://localhost:13133/` y
+devuelve `DOWN` si no responde. Un indicador DOWN pone **todo** el `/actuator/health` en DOWN →
+503 → y si la plataforma lo usa como *liveness probe*, **el pod se reinicia en bucle**. Es
+exactamente el acoplamiento que este repositorio ya evitó con Redis
+(`management.health.redis.enabled: false`). Un `@ConditionalOnClass` sobre el agente de
+OpenTelemetry lo mitiga, pero no sabemos si nuestro despliegue lo llevará: ver las preguntas
+abiertas en [redis-instruction.md](redis-instruction.md) §6.

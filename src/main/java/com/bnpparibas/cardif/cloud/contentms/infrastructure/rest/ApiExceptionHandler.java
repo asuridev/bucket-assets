@@ -79,11 +79,10 @@ public class ApiExceptionHandler {
     }
 
     /**
-     * Faltan los headers obligatorios del POST ({@code correlation_id},
-     * {@code request_id}, {@code _p}). Spring los rechaza antes de Bean Validation, asi
-     * que sin este handler el caso caeria en el catch-all como 500.
-     *
-     * <p>El GET de descarga no declara ninguno, asi que nunca llega por aqui.
+     * Ningun endpoint de esta rama declara headers obligatorios, asi que este handler no
+     * llega a dispararse. Se conserva porque Spring rechaza un header que falte ANTES de Bean
+     * Validation, y sin el ese caso caeria en el catch-all como 500 en cuanto alguien anada
+     * un endpoint que si los exija.
      */
     @ExceptionHandler(MissingRequestHeaderException.class)
     public ResponseEntity<ErrorResponse> onMissingHeader(MissingRequestHeaderException exception) {

@@ -14,4 +14,8 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # never, igual que production: el detalle de cada componente de salud saldria SIN
+      # autenticacion ninguna, y el escaneo de seguridad lo marca. No se usa when-authorized
+      # porque sin Spring Security no hay usuario autenticado nunca: se comportaria igual que
+      # never, sugiriendo una autorizacion que no existe. En local sigue en always.
+      show-details: never
