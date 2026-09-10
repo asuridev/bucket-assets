@@ -4,6 +4,5 @@ spring:
     import:
       - "classpath:parameters/local/logging.yaml"
       - "classpath:parameters/local/management.yaml"
-      - "classpath:parameters/local/storage.yaml"
       - "classpath:parameters/local/cache.yaml"
       - "classpath:parameters/local/secrets.yaml"

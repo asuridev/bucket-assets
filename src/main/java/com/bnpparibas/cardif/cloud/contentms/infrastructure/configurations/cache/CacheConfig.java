@@ -44,20 +44,18 @@ public class CacheConfig implements CachingConfigurer {
 
     /**
      * Nombre de la cache, que es a la vez el prefijo de las claves en Redis
-     * ({@code contentms:content::cmsContent/12345/image1.png}). Tener prefijo propio
-     * permite barrer lo de este servicio con {@code contentms:*} sin tocar nada mas de la
-     * instancia.
+     * ({@code contentms:cache::42}). Tener prefijo propio permite barrer lo de este servicio
+     * con {@code contentms:*} sin tocar nada mas de la instancia.
      */
-    public static final String CONTENT_CACHE = "contentms:content";
+    public static final String VALUE_CACHE = "contentms:cache";
 
     @Bean
     public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory,
             CacheProperties properties) {
 
         RedisCacheConfiguration defaults = RedisCacheConfiguration.defaultCacheConfig()
-                // Un archivo que no existe no se cachea: el GET falla con FileNotFoundError,
-                // que es una excepcion y no llega a guardarse. Asi, subirlo despues se ve
-                // de inmediato en vez de esperar al TTL.
+                // Un null no se cachea. Aqui el generador nunca devuelve null, pero la
+                // regla se queda: cachear ausencias es una fuente clasica de sorpresas.
                 .disableCachingNullValues()
                 .entryTtl(properties.ttl())
                 .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(
@@ -65,12 +63,13 @@ public class CacheConfig implements CachingConfigurer {
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(
                         GenericJackson2JsonRedisSerializer.builder()
                                 .objectMapper(cacheObjectMapper())
-                                // Sin el tipo en el JSON, la lectura devolveria un
-                                // LinkedHashMap en vez de un StoredFile.
+                                // Se conserva el tipado por defecto para recorrer el mismo
+                                // camino de serializacion que la rama principal, aunque aqui
+                                // lo que se cachea sea un String.
                                 .defaultTyping(true)
                                 .build()));
 
-        log.info("Cache '{}' activa, TTL de {} minutos", CONTENT_CACHE, properties.ttlMinutes());
+        log.info("Cache '{}' activa, TTL de {} minutos", VALUE_CACHE, properties.ttlMinutes());
 
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(defaults)
@@ -82,16 +81,16 @@ public class CacheConfig implements CachingConfigurer {
      * aqui no es una respuesta HTTP y no debe cambiar si algun dia se retoca la
      * serializacion de la API.
      *
-     * <p>La configuracion de visibilidad es lo que hace legible un {@code record} como
-     * {@code StoredFile}, que no tiene setters ni constructor vacio: {@code ALL/NONE} apaga
-     * todo, {@code FIELD/ANY} deja escribir los campos y {@code CREATOR/ANY} hay que
-     * restaurarlo explicitamente porque {@code ALL/NONE} tambien lo apago. El
-     * {@code ParameterNamesModule} casa los parametros del constructor por su nombre real,
-     * que esta en el bytecode porque Spring Boot compila con {@code -parameters}.
+     * <p>La configuracion de visibilidad es la que hace legible un {@code record} sin
+     * setters ni constructor vacio: {@code ALL/NONE} apaga todo, {@code FIELD/ANY} deja
+     * escribir los campos y {@code CREATOR/ANY} hay que restaurarlo explicitamente porque
+     * {@code ALL/NONE} tambien lo apago. El {@code ParameterNamesModule} casa los parametros
+     * del constructor por su nombre real, que esta en el bytecode porque Spring Boot compila
+     * con {@code -parameters}.
      *
-     * <p>El {@code byte[]} del contenido viaja como base64 (~33% de sobrecoste): con el
-     * tope de 10 MB por archivo que ya impone la politica del bucket, son ~13,4 MB por
-     * entrada, muy por debajo de lo que admite Redis.
+     * <p>En esta rama lo que se cachea es un {@code String}, asi que nada de eso hace falta.
+     * Se conserva igual que en la rama principal a proposito: el objetivo es validar la
+     * conexion recorriendo el mismo codigo, no una version simplificada de el.
      */
     private static ObjectMapper cacheObjectMapper() {
         ObjectMapper mapper = new ObjectMapper();

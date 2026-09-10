@@ -18,8 +18,6 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
-import org.springframework.web.multipart.MaxUploadSizeExceededException;
-import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 /**
  * Traduce toda excepcion al cuerpo de error del HU-211.
@@ -47,9 +45,7 @@ public class ApiExceptionHandler {
     private static final String CODE_MALFORMED_REQUEST = "MALFORMED_REQUEST";
     private static final String CODE_MISSING_HEADER = "MISSING_REQUIRED_HEADER";
     private static final String CODE_MISSING_PARAMETER = "MISSING_REQUIRED_PARAMETER";
-    private static final String CODE_MISSING_PART = "MISSING_REQUIRED_PART";
     private static final String CODE_METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED";
-    private static final String CODE_FILE_TOO_LARGE = "FILE_TOO_LARGE";
     private static final String CODE_INTERNAL_ERROR = "INTERNAL_ERROR";
 
     /**
@@ -101,12 +97,6 @@ public class ApiExceptionHandler {
                 "Falta el parametro '" + exception.getParameterName() + "' en la peticion");
     }
 
-    @ExceptionHandler(MissingServletRequestPartException.class)
-    public ResponseEntity<ErrorResponse> onMissingPart(MissingServletRequestPartException exception) {
-        return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MISSING_PART,
-                "Falta la parte '" + exception.getRequestPartName() + "' en la peticion multipart");
-    }
-
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
     public ResponseEntity<ErrorResponse> onMalformedRequest(Exception exception) {
         return buildAndLog(HttpStatus.BAD_REQUEST, CODE_MALFORMED_REQUEST, "Peticion malformada");
@@ -116,17 +106,6 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErrorResponse> onMethodNotAllowed(HttpRequestMethodNotSupportedException exception) {
         return buildAndLog(HttpStatus.METHOD_NOT_ALLOWED, CODE_METHOD_NOT_ALLOWED,
                 "Metodo HTTP no soportado");
-    }
-
-    /**
-     * El limite de {@code spring.servlet.multipart.max-file-size} salta antes de que el
-     * caso de uso pueda comparar contra la politica del bucket, asi que este 413 y el
-     * de {@code FileTooLargeError} son dos caminos al mismo contrato.
-     */
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    public ResponseEntity<ErrorResponse> onMaxUploadSizeExceeded(MaxUploadSizeExceededException exception) {
-        return buildAndLog(HttpStatus.PAYLOAD_TOO_LARGE, CODE_FILE_TOO_LARGE,
-                "El archivo supera el tamano maximo permitido");
     }
 
     // -- Errores de negocio tipados --------------------------------------------

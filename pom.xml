@@ -20,7 +20,6 @@
     <properties>
         <java.version>21</java.version>
         <springdoc.version>2.8.9</springdoc.version>
-        <ibm-cos.version>2.14.1</ibm-cos.version>
         <ibm-secrets-manager.version>2.0.22</ibm-secrets-manager.version>
         <ibm-sdk-core.version>9.24.1</ibm-sdk-core.version>
     </properties>
@@ -59,26 +58,6 @@
             <version>${springdoc.version}</version>
         </dependency>
 
-        <!--
-          SDK de IBM Cloud Object Storage. Es un fork del AWS SDK v1, no del v2: su
-          namespace es com.ibm.cloud.objectstorage.*, y es el unico que habla IAM
-          (BasicIBMOAuthCredentials), que es como nos autenticamos contra el COS.
-        -->
-        <dependency>
-            <groupId>com.ibm.cos</groupId>
-            <artifactId>ibm-cos-java-sdk</artifactId>
-            <version>${ibm-cos.version}</version>
-        </dependency>
-
-        <!--
-          SDK de IBM Cloud Secrets Manager (API v2). De aqui salen las credenciales del
-          COS al arrancar, en vez de leerlas de variables de entorno planas.
-
-          Ojo: no comparte nada con el SDK del COS de arriba. Aquel es un fork del AWS
-          SDK v1; este es un SDK generado de OpenAPI que se apoya en sdk-core, que es
-          quien trae el IamAuthenticator (el que cambia la API key por un token IAM).
-          sdk-core viene transitivo, pero se declara para fijar la version.
-        -->
         <dependency>
             <groupId>com.ibm.cloud</groupId>
             <artifactId>secrets-manager</artifactId>

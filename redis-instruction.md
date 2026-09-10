@@ -1,5 +1,10 @@
 # Probar la conexión a Redis, y qué variables poner en cada entorno
 
+> **Rama `feature/only-cache`.** Aquí la aplicación es un solo endpoint que devuelve un string
+> aleatorio y lo cachea, sin nada de object storage. Eso hace la prueba más directa que en
+> `main`: **dos llamadas con el mismo id tienen que devolver el mismo valor**, y basta con leer
+> la respuesta. El resto del documento —TLS, secretos, variables— vale igual en las dos ramas.
+
 La conexión a Redis ya no sale de `spring.data.redis.*`: sale del **service credential** que
 ContentMS lee de IBM Cloud Secrets Manager al arrancar. Del secreto vienen el host, el puerto, el
 usuario de ACL, la password, la base de datos y **la CA del TLS**.
@@ -15,14 +20,19 @@ porqué del mecanismo está en [`credenciales-ibm-cloud.md`](credenciales-ibm-cl
 Es lo más importante de esta página. Si el TLS falla, **el servicio sigue respondiendo 200 en
 todas las peticiones** y la caché simplemente no guarda nada:
 
-- `CacheConfig.errorHandler()` degrada cualquier fallo de Redis a un WARN y sirve desde el COS.
+- `CacheConfig.errorHandler()` degrada cualquier fallo de Redis a un WARN y la petición sigue
+  hasta el generador, que devuelve un valor nuevo.
 - `management.health.redis.enabled` está en `false` en los tres perfiles, así que
   `/actuator/health` tampoco se entera.
 
-Las dos únicas pruebas que valen son:
+En esta rama hay una tercera, y es la más rápida: **pedir el mismo id dos veces**. Si los
+valores difieren, la caché no está funcionando, por mucho que las dos respuestas sean 200.
 
-1. **Ver la clave en Redis** (`KEYS 'contentms:*'`).
-2. **Ver la conexión en el puerto TLS y con el usuario del secreto** (`CLIENT LIST` →
+Las tres pruebas que valen:
+
+1. **Dos GET al mismo id devuelven lo mismo.**
+2. **Ver la clave en Redis** (`KEYS 'contentms:*'`).
+3. **Ver la conexión en el puerto TLS y con el usuario del secreto** (`CLIENT LIST` →
    `laddr=...:6380 user=contentms`).
 
 Cualquier otra cosa —que arranque, que devuelva 200, que el health esté verde— es compatible con
@@ -39,7 +49,7 @@ certificados; si no está, aborta diciéndolo).
 
 ```bash
 cd infra
-./up.sh redis minio ibm-secret-manager
+./up.sh redis ibm-secret-manager        # MinIO ya no hace falta en esta rama
 ```
 
 Eso hace tres cosas nuevas respecto a antes:
@@ -93,8 +103,7 @@ En Windows: `.\mvnw.cmd clean package`.
 ### 2.5 Las dos líneas del log que hay que buscar
 
 ```
-Secrets Manager: 4 claves cargadas del secreto 'contentms-secrets' (grupo 'default')
-  [COS_API_KEY, COS_SERVICE_INSTANCE_ID, MINIO_ACCESS_KEY, MINIO_SECRET_KEY]
+Sin secreto kv (secrets.name vacio): las credenciales del COS tienen que llegar por variable de entorno
 
 Secrets Manager: conexion a Redis tomada del service credential 'contentms-redis-credentials'
   (grupo 'default'); 8 propiedades [spring.data.redis.database, spring.data.redis.host,
@@ -103,34 +112,29 @@ Secrets Manager: conexion a Redis tomada del service credential 'contentms-redis
   spring.ssl.bundle.pem.contentms-redis.truststore.certificate]
 ```
 
-Si la segunda no aparece, el interruptor está apagado: busca
-`Service credential de Redis desactivado`.
+La primera confirma que el camino `kv` está desactivado **a propósito** en esta rama (§5.2). Si
+la segunda no aparece, la caché está apagada: busca `Cache desactivada`.
 
-### 2.6 Subir un archivo
-
-```bash
-curl -X POST http://localhost:8080/v1/save-content \
-  -H 'correlation_id: 11111111-1111-1111-1111-111111111111' \
-  -H 'request_id: 22222222-2222-2222-2222-222222222222' \
-  -H '_p: 12345' \
-  -F 'jsonString={"fileName":"prueba.png","partnerId":"12345"};type=application/json' \
-  -F 'file=@prueba.png'
-```
-
-Esperado: `{"returnCode":"201","message":"Created"}`.
-
-> **El bucket solo admite `image/png`, `image/jpeg`, `image/gif`, `image/svg+xml` y
-> `application/pdf`.** Con un `.txt` responde `422 UNSUPPORTED_CONTENT_TYPE`, que despista si no
-> lo sabes. El tipo sale de la extensión del `fileName`, no de lo que declare el cliente.
-
-### 2.7 Pedirlo dos veces y verificar la caché
+### 2.6 La prueba central
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8080/v1/content-loaded?context_url=12345/prueba.png'
-curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8080/v1/content-loaded?context_url=12345/prueba.png'
+curl -s http://localhost:8080/v1/cache/42; echo
+curl -s http://localhost:8080/v1/cache/42; echo
+curl -s http://localhost:8080/v1/cache/43; echo
 ```
 
-Y ahora la comprobación de verdad:
+Esperado: **las dos primeras iguales**, la tercera distinta.
+
+```
+7fe434bd-7252-4c59-b7c8-17a3d0238237
+7fe434bd-7252-4c59-b7c8-17a3d0238237
+83d348f5-187c-4c85-8ebf-cd8b3e50012c
+```
+
+Y en el log, `Valor GENERADO` **una sola vez por id**. Si aparece en cada petición, la caché no
+está interceptando: el decorador no se instaló, o Redis no responde.
+
+### 2.7 Verificar la caché en Redis
 
 ```bash
 podman exec infra-redis redis-cli --tls --cacert /tls/ca.crt -p 6380 \
@@ -140,15 +144,15 @@ podman exec infra-redis redis-cli --tls --cacert /tls/ca.crt -p 6380 \
 Esperado:
 
 ```
-contentms:content::cmsContent/12345/prueba.png
+contentms:cache::42
+contentms:cache::43
 ```
 
 > **En Git Bash, antepón `MSYS_NO_PATHCONV=1`.** Si no, convierte `/tls/ca.crt` en una ruta de
 > Windows y `redis-cli` contesta `Invalid CA Certificate File/Directory`, que parece un problema
 > de certificados y no lo es.
 
-En DevX, donde no hay `exec`, la vía es **Redis Commander en el 8081** (`admin`/`admin`): la
-clave tiene que aparecer ahí.
+En DevX, donde no hay `exec`, la vía es **Redis Commander en el 8081** (`admin`/`admin`).
 
 ### 2.8 La comprobación que cierra el asunto
 
@@ -184,10 +188,10 @@ El tercero no es opcional: el secreto se lee **una sola vez, al arrancar**.
 
 | Prueba | Cómo | Resultado esperado |
 |---|---|---|
-| **CA equivocada** | Sustituir `certificate_base64` por el de otra CA | **200 en los dos GET, `KEYS` vacío**, y en el log `SSLHandshakeException: unable to find valid certification path`. Es el fallo silencioso en directo |
-| **Password de ACL equivocada** | Cambiar `authentication.password` | Igual: 200, caché vacía, y un WARN con `WRONGPASS` |
+| **CA equivocada** | Sustituir `certificate_base64` por el de otra CA | **200 en los dos GET, pero un valor DISTINTO en cada uno**, `KEYS` vacío, y `SSLHandshakeException: PKIX path building failed` en el log. El fallo silencioso en directo — y aquí visible en la propia respuesta |
+| **Password de ACL equivocada** | Cambiar `authentication.password` | Igual: 200, valores distintos, caché vacía, y un WARN con `WRONGPASS` |
 | **Secreto ausente** | Renombrar `secret-redis.json` y recargar | **La aplicación no arranca**: `No se pudo leer el service credential de Redis 'contentms-redis-credentials' ...` |
-| **Sin caché** | `CACHE_ENABLED=false` | Arranca sin leer el service credential y sin decorador: el GET siempre va al COS |
+| **Sin caché** | `CACHE_ENABLED=false` | Arranca sin leer el service credential y sin decorador: **cada llamada devuelve un valor nuevo** |
 
 Después de la primera y la segunda, para volver al estado bueno:
 
@@ -237,22 +241,24 @@ Los dos perfiles son idénticos en esto.
 | `SECRETS_URL` | `https://<guid>.<region>.secrets-manager.appdomain.cloud` | Ya era obligatoria. Ver `secret-manager.md` §7.2 |
 | `IBM_CLOUD_API_KEY` | la API key de la service ID | La credencial con la que se lee el secreto. Sin default fuera de `local` |
 
-Las del COS (`COS_ENDPOINT`, `COS_BUCKET_CMS_CONTENT`, `COS_LOCATION`) no cambian: ver
-`README.md` §6.
+Y nada más: en esta rama **esas dos son todas las variables obligatorias**. No hay COS que
+configurar.
 
 ### 5.2 Opcionales
 
 | Variable | Cuándo ponerla |
 |---|---|
 | `SECRETS_REDIS_NAME` | Si el secreto no se llama `contentms-redis-credentials` |
-| `SECRETS_NAME` | Vacía si el servicio **no tiene secreto `kv`** (todas sus credenciales llegan como service credentials). Ver credenciales-ibm-cloud.md §10.1 |
-| `SECRETS_REDIS_GROUP` | Solo si vive en un grupo distinto al del secreto `kv` |
+| `SECRETS_REDIS_GROUP` | Solo si el secreto vive en un grupo distinto de `default` |
 
-> **La duda habitual: ¿`SECRETS_GROUP` o `SECRETS_REDIS_GROUP`?** Las dos, pero apuntan a
-> secretos distintos: la primera al `kv` de las credenciales del COS, la segunda al
-> `service_credentials` de Redis. **Configura `SECRETS_GROUP` y deja la otra vacía**: vacía
-> hereda el grupo de la primera, que es lo normal. Solo se separan si DevOps los coloca en
-> grupos distintos, y entonces la service ID necesita permiso sobre los dos.
+> **`SECRETS_NAME` y `SECRETS_GROUP` no aparecen aquí a propósito.** Localizan el secreto `kv`,
+> y en esta rama está desactivado: las dos claves vienen **comentadas** en
+> `parameters/<perfil>/secrets.yaml`. El código que las lee está intacto, así que empezar a usar
+> un `kv` es descomentarlas y consumir sus claves como `${VARIABLE}` desde cualquier YAML — sin
+> tocar Java. Ver `credenciales-ibm-cloud.md` §10.1.
+>
+> Por eso `SECRETS_REDIS_GROUP` declara aquí su propio default (`default`) en vez de heredarlo
+> de `SECRETS_GROUP`: heredar de una clave comentada sería una indirección invisible.
 >
 > **En local no basta con la variable**: el stub de WireMock casa por ruta literal y sus
 > mappings llevan `default` escrito dentro (`/secret_groups/default/...`). Cambiar el grupo
