@@ -116,7 +116,7 @@ Full write-up in `secret-manager.md`; the parts that matter when changing code:
   to `AutoConfiguration.imports`). It fetches one `kv` secret and registers its keys as a
   `MapPropertySource` named `ibm-secrets-manager`.
 - **The secret's keys are named exactly like the env vars the YAML already used**
-  (`COS_API_KEY`, `COS_SERVICE_INSTANCE_ID`, `REDIS_PASSWORD`), so `${COS_API_KEY}` in
+  (`COS_API_KEY`, `COS_SERVICE_INSTANCE_ID`), so `${COS_API_KEY}` in
   `parameters/develop/storage.yaml` resolves on its own. `StorageProperties`, `CosConfig` and
   every YAML are untouched and know nothing about Secrets Manager. **Adding a new secret is a
   key in the secret plus a `${VAR}` in a YAML — no Java.** The reference project does the
@@ -135,26 +135,14 @@ Full write-up in `secret-manager.md`; the parts that matter when changing code:
   constructor; an SLF4J logger there would swallow its lines. It also binds `secrets.enabled`
   separately and *first*, because binding the whole record would blow up on an unresolved
   `${SECRETS_URL}` even with the feature off — which would make the escape hatch useless.
-- **Two auth modes**, switched by `secrets.auth-mode` (`apikey` | `container`) — same pattern
-  as `storage.auth-mode`, one level up. `apikey` (the default) uses `IamAuthenticator` with
-  `IBM_CLOUD_API_KEY`, the one credential that stays a plain env var. `container` uses
-  `ContainerAuthenticator`: the SDK reads the compute-resource token Code Engine mounts in the
-  pod and exchanges it against a trusted profile, so **no credential exists in the
-  deployment**. Switching is one env var and a restart — no image, no code. The default is
-  `apikey` deliberately: it is what already works, so a deployment that does nothing is
-  unaffected.
-- **No automatic fallback between modes**, on purpose. A `container`→`apikey` fallback would
-  hide a misconfigured trusted profile (the migration never completes) and make the Secrets
-  Manager audit log unattributable. A misconfigured mode refuses to start instead, naming the
-  missing property — `IbmSecretsManagerSource.requireCredentials()`.
-- `api-key` is `${IBM_CLOUD_API_KEY:}` (empty default) in develop/production: without it the
-  `Binder` would blow up on an unresolved placeholder in `container` mode, where the variable
-  must not exist. The fail-fast moved to `requireCredentials()`, which gives a better message.
-- `container` mode **is rehearsable locally**: the SDK's cr-token exchange hits the same
-  `POST /identity/token` the WireMock stub already serves, so pointing `SECRETS_CR_TOKEN_FILE`
-  at `deploy/secrets-manager-stub/cr-token` exercises the whole path. WireMock's request
-  journal (`/__admin/requests`) shows which `grant_type` was actually sent — that is the proof
-  the mode is live, not the fact that it booted.
+- **One auth mode only.** `IamAuthenticator` with `IBM_CLOUD_API_KEY`, the one credential
+  that stays a plain env var — it is the key that opens the rest, so it cannot live inside
+  what it opens. A `container` mode (compute-resource token exchanged against a trusted
+  profile, no credential in the deployment) existed and was removed for lack of use; if it
+  ever comes back, the change is contained in `SecretsManagerClients`.
+- `api-key` has **no default** in develop/production: missing it means the app does not start.
+  That is safe because the EPP binds `secrets.enabled` separately and first, so with the
+  feature off the placeholder is never resolved.
 - Local runs the **same adapter against a different URL** — a WireMock stub in the compose
   (`deploy/secrets-manager-stub/`) serving both `POST /identity/token` and the v2 secret path.
   Same reasoning as MinIO vs COS. Note WireMock rejects unknown top-level fields in a mapping

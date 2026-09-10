@@ -1,11 +1,10 @@
-# Cache de Redis contra el contenedor que levanta deploy/docker-compose.yaml.
-# TTL corto a proposito: en local interesa poder ver expirar una entrada sin esperar.
+# Cache de Redis. TTL corto a proposito: en local interesa poder ver expirar una entrada sin
+# esperar.
+#
+# Aqui NO se configura la conexion. Host, puerto, usuario, password y TLS salen del service
+# credential que se lee al arrancar (secrets.redis.* -> IbmRedisCredentialsSource), que es el
+# unico sitio que define spring.data.redis.*. Con cache.enabled=false no se lee ese secreto
+# y no hay conexion que configurar.
 cache:
   enabled: ${CACHE_ENABLED:true}
   ttl-minutes: ${CACHE_TTL_MINUTES:10}
-
-spring:
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}

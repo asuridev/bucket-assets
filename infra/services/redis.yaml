@@ -1,11 +1,64 @@
+  # Redis escucha en DOS puertos a la vez: 6379 en claro y 6380 con TLS.
+  #
+  # No es indecision. La instancia real de IBM solo habla TLS (scheme rediss, puerto 31273,
+  # usuario de ACL y una CA autofirmada), y el 6380 es lo que permite ensayar ese camino
+  # entero en local. Pero apagar el puerto en claro -- que es lo que hace una instancia de
+  # verdad -- dejaria ciego a Redis Commander, que habla en claro contra redis:6379 por la
+  # red interna y que en DevX es la UNICA forma de mirar la cache: alli no hay `exec` ni
+  # acceso al 6379 por TCP. Y justo esta es la funcionalidad cuyo fallo es silencioso
+  # (CacheConfig.errorHandler degrada a WARN y el health de Redis esta desactivado), asi que
+  # perder el instrumento de diagnostico seria lo peor posible. El healthcheck de aqui abajo
+  # tiene el mismo problema.
+  #
+  # Los certificados los genera up.sh en conf/redis-tls/ y no se commitean.
   redis:
     image: __IMAGE_REDIS__
     container_name: infra-redis
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /tls/redis.crt
+      - --tls-key-file
+      - /tls/redis.key
+      - --tls-ca-cert-file
+      - /tls/ca.crt
+      # Sin esto Redis exige certificado de CLIENTE (TLS mutuo) y Lettuce no tiene ninguno.
+      # La instancia de IBM tampoco lo pide: alli el certificado autentica al servidor, y al
+      # cliente lo autentica el usuario de ACL.
+      - --tls-auth-clients
+      - "no"
+      # El usuario por defecto se queda SIN password para que Redis Commander y el
+      # healthcheck sigan funcionando sin tocarlos.
+      - --user
+      - default
+      - "on"
+      - nopass
+      - "~*"
+      - "+@all"
+      # Y la aplicacion usa un usuario de ACL propio, que es lo que hace el service credential
+      # real (username ibm_cloud_...). Sin esto, el ensayo local no probaria que
+      # spring.data.redis.username se aplica.
+      - --user
+      - __REDIS_ACL_USER__
+      - "on"
+      - ">__REDIS_ACL_PASSWORD__"
+      - "~*"
+      - "+@all"
     ports:
       # Literal, sin ${VAR:-default}: el compose de DevX no sustituye dentro de `ports` y
       # parte el string por ":", con lo que revienta al arrancar.
       - "6379:6379"
+      - "6380:6380"
+    volumes:
+      # El compose generado vive en generated/, de ahi el ../conf.
+      - ../conf/redis-tls:/tls:ro
     healthcheck:
+      # Por el puerto en claro y como usuario default, que no tiene password: si el
+      # healthcheck necesitara credenciales, cambiarlas romperia el arranque del stack.
       test: ["CMD-SHELL", "redis-cli ping"]
       interval: 5s
       timeout: 5s

@@ -30,7 +30,8 @@ con su secreto generado a medida de este stack.
 
 | Servicio | Puerto | Usuario / contraseña |
 |---|---|---|
-| Redis | 6379 | sin auth |
+| Redis (en claro) | 6379 | sin auth |
+| Redis (TLS) | 6380 | `contentms` / `contentms-local` (usuario de ACL) |
 | Redis Commander (UI) | 8081 | `admin` / `admin` |
 | MongoDB | 27017 | `admin` / `admin` |
 | mongo-express (UI) | 8082 | `admin` / `admin` |
@@ -42,6 +43,27 @@ con su secreto generado a medida de este stack.
 
 **MinIO es la única excepción a `admin`/`admin`**: rechaza arrancar con una contraseña de menos
 de 8 caracteres.
+
+**Redis escucha en dos puertos a la vez, y no es indecisión.** La instancia real de IBM solo
+habla TLS (`scheme: rediss`, usuario de ACL y una CA autofirmada), y el 6380 permite ensayar
+ese camino entero en local: la aplicación lo toma del service credential que sirve el stub.
+Pero apagar el puerto en claro —que es lo que hace una instancia de verdad— dejaría ciego a
+Redis Commander, que habla en claro y que en DevX es la **única** forma de mirar la caché.
+Y justo esta es la funcionalidad cuyo fallo es silencioso, así que perder el instrumento de
+diagnóstico sería lo peor posible.
+
+Los certificados los genera `up.sh` en `conf/redis-tls/` (no se commitean) y **hace falta
+`openssl`** para ello. Si no está, `up.sh` aborta diciéndolo: instálalo, genera los cuatro
+ficheros a mano, o trabaja sin caché con `CACHE_ENABLED=false`.
+
+```bash
+# comprobar el TLS
+openssl s_client -connect localhost:6380 -CAfile conf/redis-tls/ca.crt </dev/null
+
+# ver las claves de la caché por el puerto TLS
+redis-cli --tls --cacert conf/redis-tls/ca.crt -p 6380 \
+  --user contentms --pass contentms-local KEYS 'contentms:*'
+```
 
 **El `admin`/`admin` de MongoDB lo crea la propia imagen**, con
 `MONGO_INITDB_ROOT_USERNAME`/`MONGO_INITDB_ROOT_PASSWORD`: el entrypoint oficial activa `--auth`
@@ -74,7 +96,7 @@ reload-secret.sh          Le dice al stub de Secrets Manager que relea el secret
 services/*.yaml           Un fragmento de compose por servicio, con marcadores __IMAGE_X__.
 conf/default.conf.template  Plantilla del nginx que sirve mongo-express bajo el subpath.
 conf/mongo-ui.conf        Generada por up.sh con tu prefijo dentro. No se commitea.
-conf/secrets-manager-stub/  Los stubs de WireMock: mappings/iam-token.json y cr-token viajan
+conf/secrets-manager-stub/  Los stubs de WireMock: mappings/iam-token.json viaja
                           tal cual; mappings/secret-kv.json lo genera up.sh la primera vez
                           desde secret-kv.json.template, luego lo CONSERVA (se edita a
                           mano) y NO se commitea (ver abajo).
@@ -230,6 +252,9 @@ pinchar tablas; miente sobre lo que acepta un Oracle actual.
 
 ## El secreto del stub: se genera una vez, luego se edita a mano
 
+> El paso a paso para probar la conexión a Redis con TLS de punta a punta está en
+> [`redis-instruction.md`](../redis-instruction.md).
+
 `conf/secrets-manager-stub/mappings/secret-kv.json` sale de `secret-kv.json.template` la **primera
 vez** que se levanta `ibm-secret-manager`, sustituyendo las credenciales de MinIO. **No es
 cosmético**: el secreto lleva dentro `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` y son las que el
@@ -242,8 +267,17 @@ Esas credenciales viven en **un solo sitio**, las variables `MINIO_USER`/`MINIO_
 plantilla del secreto. Escritas a mano en los tres, cambiar una sola dejaría al servicio
 firmando con unas y a MinIO esperando otras.
 
-`up.sh` **aborta** si queda algún marcador `__MINIO_*__` sin sustituir, igual que hace con el
-prefijo del nginx: servir marcadores literales daría un fallo mucho más tarde y sin pista.
+`up.sh` **aborta** si queda algún marcador `__LO_QUE_SEA__` sin sustituir, igual que hace con
+el prefijo del nginx: servir marcadores literales daría un fallo mucho más tarde y sin pista.
+El patrón es genérico y no `__MINIO_`, porque hay más de un secreto y más de un marcador.
+
+Y son **dos** secretos, no uno. El segundo, `mappings/secret-redis.json`, es un
+`service_credentials` con la conexión a Redis, y su plantilla es `secret-redis.json.template`.
+Va aparte porque un service credential pertenece a **una** instancia enlazada, así que las
+credenciales del COS y las de Redis no pueden compartir secreto (ver
+[`credenciales-ibm-cloud.md`](../credenciales-ibm-cloud.md)). Lleva dentro la CA de
+`conf/redis-tls/`, por lo que `up.sh` lo **rehace siempre que regenera los certificados**:
+servir una CA que ya no firma nada daría un handshake fallido, y ese fallo es silencioso.
 
 La plantilla vive **fuera** de `mappings/` a propósito: WireMock aborta el arranque si encuentra
 ahí un fichero que no sepa parsear.
@@ -251,8 +285,8 @@ ahí un fichero que no sepa parsear.
 ### Cambiar los valores del secreto
 
 El fichero generado **se conserva**: si ya existe, `./up.sh` no lo toca. Es el sitio donde se
-editan los valores a mano — otras credenciales de MinIO, un `COS_API_KEY` real para probar, un
-`REDIS_PASSWORD`. El ciclo es:
+editan los valores a mano — otras credenciales de MinIO, o un `COS_API_KEY` real para probar.
+El ciclo es:
 
 ```bash
 vi conf/secrets-manager-stub/mappings/secret-kv.json   # 1. editar
@@ -297,4 +331,7 @@ Para volver a los valores de la plantilla: `./up.sh --regen-secret ibm-secret-ma
 | `infra-oracle` muere solo, sin log claro | Oracle Free pide ~1,5-2 GB de RAM y el workspace no da para tanto | Cambiar a `gvenzl/oracle-xe:21-slim-faststart` en `images.json` y `ORACLE_SERVICE=XEPDB1` en `up.sh` |
 | `infra-mongo` se queda **`unhealthy`** para siempre | El healthcheck no encuentra `mongosh`, casi seguro porque el registro sirvió otra versión bajo ese tag | `docker inspect infra-mongo --format '{{json .State.Health}}'` y `docker exec infra-mongo mongosh --quiet --eval "db.version()"` |
 | mongo-express o la app dan **`Authentication failed`** | El volumen `mongo-data-v8` ya tenía datos, así que el entrypoint se saltó el init y no creó el usuario `admin` | `./down.sh -v` para empezar limpio. A mano: `docker exec -it infra-mongo mongosh` y dentro `use admin` + `db.createUser({user:"admin", pwd:"admin", roles:[{role:"root", db:"admin"}]})` |
+| **La caché no guarda nada y todo responde 200** | El handshake TLS con Redis falla y `CacheConfig.errorHandler()` lo degrada a WARN | Es el fallo silencioso de siempre. `redis-cli ... KEYS 'contentms:*'` (arriba) y busca `SSLHandshakeException` en el log. Causa típica: los certificados se regeneraron y el secreto sirve la CA vieja → `./up.sh --regen-secret redis ibm-secret-manager` |
+| La app no arranca: `No se pudo leer el service credential de Redis ...` | Falta `mappings/secret-redis.json`, o el nombre/grupo no cuadran con `secrets.redis.*` | `./up.sh ibm-secret-manager` lo genera. Para arrancar sin él: `CACHE_ENABLED=false` |
+| `up.sh` aborta con `hace falta openssl` | No está en el PATH | Instalarlo, o arrancar con `CACHE_ENABLED=false` |
 | `infra-mongo` sale con **exit 1** nada más arrancar | Solo está definida una de `MONGO_INITDB_ROOT_USERNAME`/`_PASSWORD`: el entrypoint aborta a propósito en vez de arrancar sin autorización | Revisar `services/mongo.yaml`: las dos o ninguna |

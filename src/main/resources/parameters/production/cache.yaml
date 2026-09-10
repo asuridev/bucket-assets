@@ -1,19 +1,15 @@
-# Cache de Redis de produccion. Host y puerto sin default, igual que las credenciales del
-# COS: con la cache activada, arrancar sin saber donde esta Redis es un fallo de despliegue
-# y debe verse al arrancar, no en la primera peticion.
+# Cache de Redis de produccion.
 #
 # El TTL es largo porque el contenido es estatico migrado de Liferay: solo cambia si alguien
 # vuelve a subir el archivo, y eso ya invalida la entrada por su cuenta.
+#
+# Aqui NO se configura la conexion. Host, puerto, usuario, password y TLS salen del service
+# credential que se lee al arrancar (secrets.redis.* -> IbmRedisCredentialsSource), que es el
+# unico sitio que define spring.data.redis.*.
+#
+# El fail-fast de antes -- REDIS_HOST y REDIS_PORT sin default, para no arrancar sin saber
+# donde esta Redis -- lo cubre ahora ese secreto: con la cache activada es obligatorio, y si no
+# se puede leer, la aplicacion no arranca.
 cache:
   enabled: ${CACHE_ENABLED:true}
   ttl-minutes: ${CACHE_TTL_MINUTES:1440}
-
-spring:
-  data:
-    redis:
-      host: ${REDIS_HOST}
-      port: ${REDIS_PORT}
-      # Password de Redis. Va vacia por defecto porque una instancia sin auth es
-      # legitima; cuando la hay, el valor sale del secreto de Secrets Manager, que
-      # publica REDIS_PASSWORD como propiedad (ver secret-manager.md).
-      password: ${REDIS_PASSWORD:}

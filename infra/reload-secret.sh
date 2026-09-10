@@ -17,8 +17,14 @@ cd "$(dirname "$0")"
 
 STUB_DIR=conf/secrets-manager-stub
 STUB_SECRET=$STUB_DIR/mappings/secret-kv.json
+STUB_REDIS_SECRET=$STUB_DIR/mappings/secret-redis.json
 BASE=http://localhost:8090
 SECRET_PATH=/api/v2/secret_groups/default/secret_types/kv/secrets/contentms-secrets
+# El service credential de Redis es un secreto DISTINTO, con su propio tipo en la ruta. El
+# reset de mappings recarga los dos de una vez, pero la verificacion tiene que mirar los dos:
+# si solo comprobara el kv, un secret-redis.json roto pasaria desapercibido aqui y el fallo
+# aparecerian mucho mas tarde, como una cache que no cachea nada.
+REDIS_SECRET_PATH=/api/v2/secret_groups/default/secret_types/service_credentials/secrets/contentms-redis-credentials
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -59,6 +65,24 @@ echo "Esto es lo que sirve ahora el stub:"
 cat "$BODY"
 echo
 echo
+
+# El segundo secreto solo se comprueba si existe: ./up.sh ibm-secret-manager lo genera, pero
+# un stack antiguo puede no tenerlo todavia, y eso no es un error de este script.
+if [ -f "$STUB_REDIS_SECRET" ]; then
+  HTTP=$(curl -s -o "$BODY" -w '%{http_code}' "$BASE$REDIS_SECRET_PATH") \
+    || die "el stub dejo de responder en $BASE"
+
+  [ "$HTTP" = 200 ] \
+    || die "la recarga paso, pero el stub no sirve el service credential de Redis en $REDIS_SECRET_PATH (HTTP $HTTP). Cambio el urlPath del mapping, o secrets.redis.name?"
+
+  echo "Y este es el service credential de Redis:"
+  # El certificado en base64 ocupa varias pantallas y no aporta nada leerlo entero: se
+  # recorta. Si hace falta verlo, esta en el fichero.
+  cut -c1-200 "$BODY"
+  echo
+  echo "  (recortado a 200 caracteres: el certificate_base64 es largo)"
+  echo
+fi
 
 echo "OJO: la aplicacion lee el secreto UNA SOLA VEZ, al arrancar (SecretsEnvironmentPostProcessor,"
 echo "sin refresh). Recargar el stub no basta: reinicia tambien el servicio Spring Boot para que"

@@ -12,6 +12,11 @@ Spring Boot 3.5.3 · Java 21 · Maven · arquitectura hexagonal (`domain` → `a
 
 Las credenciales salen de **IBM Cloud Secrets Manager** al arrancar; en local, de un stub que
 habla su misma API. El mecanismo completo, en **[secret-manager.md](secret-manager.md)**.
+Si el tema te es nuevo, empieza por
+**[credenciales-ibm-cloud.md](credenciales-ibm-cloud.md)**: explica los mecanismos que existen
+para obtener credenciales de IBM Cloud, con diagramas y ejemplos. Y para **probar la conexión
+a Redis** paso a paso y saber qué variables van en cada entorno,
+**[redis-instruction.md](redis-instruction.md)**.
 
 ---
 
@@ -20,6 +25,12 @@ habla su misma API. El mecanismo completo, en **[secret-manager.md](secret-manag
 - **JDK 21** (`JAVA_HOME` apuntando a él). No hace falta instalar Maven: el proyecto trae el wrapper.
 - **Podman o Docker**: el servicio siempre habla con un object storage de verdad, y en
   desarrollo ese object storage es el MinIO del compose (sección 4).
+
+> El wrapper es del tipo **`only-script`**: `.mvn/wrapper/maven-wrapper.properties` declara qué
+> Maven usar y `mvnw` lo descarga la primera vez a `~/.m2/wrapper`. **En el repo no hay ningún
+> `.jar`** — que es la pega habitual del Maven Wrapper clásico. Cambiar de versión de Maven es
+> cambiar la `distributionUrl` de ese fichero; la primera compilación necesita salida a
+> `repo1.maven.org`.
 
 ---
 
@@ -101,6 +112,14 @@ y en [`deploy/secrets-manager-stub/README.md`](deploy/secrets-manager-stub/READM
 
 Redis va sin volumen a propósito: una caché no tiene que sobrevivir a un `down`, y así cada
 arranque parte en frío, que es lo que se quiere para probarla.
+
+> **Ojo si vas a probar la conexión a Redis por service credential.** Este stack **no sirve ese
+> secreto**: su stub solo trae el `kv`, y su Redis no habla TLS ni tiene usuario de ACL. Como el
+> interruptor viene encendido en el perfil `local`, la aplicación **no arrancará** contra este
+> compose. El stack soportado para eso es el de [`infra/`](infra/README.md)
+> (`./up.sh redis minio ibm-secret-manager`). Si prefieres seguir aquí, arranca con
+> `CACHE_ENABLED=false` y trabajas sin caché. Detalle en
+> [redis-instruction.md](redis-instruction.md).
 
 ### Con Podman
 
@@ -318,62 +337,42 @@ compose tal cual.
 |---|---|---|
 | `CACHE_ENABLED` | `true` | A `false` quita el decorador: el servicio habla solo con el COS |
 | `CACHE_TTL_MINUTES` | `10` local · `60` develop · `1440` production | Minutos que vive una entrada |
-| `REDIS_HOST` | `localhost` (sin default en `production`) | Host de Redis |
-| `REDIS_PORT` | `6379` (sin default en `production`) | Puerto de Redis |
 
-En `production` `REDIS_HOST` y `REDIS_PORT` no traen default, igual que las credenciales del
-COS: con la caché activada, arrancar sin saber dónde está Redis es un fallo de despliegue y
-debe verse al arrancar, no en la primera petición.
+**La conexión a Redis no se configura aquí.** No hay `REDIS_HOST`, `REDIS_PORT` ni
+`REDIS_PASSWORD`: el host, el puerto, el usuario de ACL, la password y la CA del TLS salen
+del **service credential** que se lee al arrancar, que es el único sitio que define
+`spring.data.redis.*`. `CACHE_ENABLED=false` es el único interruptor: sin caché no se lee
+ese secreto. Detalle en [redis-instruction.md](redis-instruction.md) §5.
 
 ### Variables de Secrets Manager
 
-De aquí salen `COS_API_KEY`, `COS_SERVICE_INSTANCE_ID` y `REDIS_PASSWORD` al arrancar: los YAML
+De aquí salen `COS_API_KEY` y `COS_SERVICE_INSTANCE_ID` al arrancar: los YAML
 los siguen leyendo como `${VARIABLE}` sin saber de dónde vienen. En `local` todas traen default
 y apuntan al stub del compose. Explicación completa en [secret-manager.md](secret-manager.md).
 
 | Variable | Default | Para qué |
 |---|---|---|
 | `SECRETS_ENABLED` | `true` | A `false` desactiva Secrets Manager: los secretos vuelven a ser variables de entorno |
-| `SECRETS_AUTH_MODE` | `apikey` | `apikey` (una API key) o `container` (el token que la plataforma monta en el pod). Ver abajo |
 | `SECRETS_URL` | `http://localhost:8090` en `local`; **sin default** fuera | Endpoint de la instancia |
 | `SECRETS_IAM_URL` | `http://localhost:8090` en `local`; `https://iam.cloud.ibm.com` fuera | Emisor del token IAM |
 | `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto |
-| `SECRETS_GROUP` | `default` | Grupo que lo contiene |
-| `IBM_CLOUD_API_KEY` | valor falso en `local`; vacío fuera | **Modo `apikey`**: la API key con la que se lee el secreto. Es la única credencial que sigue siendo variable de entorno plana, y es la llave con la que se abren las demás |
-| `SECRETS_IAM_PROFILE_NAME` | vacío | **Modo `container`**: nombre del trusted profile contra el que se canjea el token del pod |
-| `SECRETS_IAM_PROFILE_ID` | vacío | **Modo `container`**: alternativa al nombre |
-| `SECRETS_CR_TOKEN_FILE` | vacío | **Modo `container`**: fichero del token. Vacío = las tres rutas por defecto del SDK, una de ellas la de Code Engine. Solo se fija para ensayar en local |
+| `SECRETS_GROUP` | `default` | Grupo que contiene el secreto `kv`. El del service credential de Redis lo hereda si `SECRETS_REDIS_GROUP` va vacía |
+| `IBM_CLOUD_API_KEY` | valor falso en `local`; **sin default** fuera | La API key con la que se lee el secreto. Es la única credencial que sigue siendo variable de entorno plana, y es la llave con la que se abren las demás |
 
 Una variable de entorno real **gana** al valor del secreto: es la vía de escape para
 sobreescribir uno puntual sin editar el secreto. Y si `SECRETS_ENABLED=true` y el secreto no se
 puede leer, **la aplicación no arranca**.
 
-#### Los dos modos de autenticación
+#### La credencial del arranque
 
-`apikey` es el **default y lo que ya funciona**: no hay que hacer nada para desplegar con él.
-`container` elimina la última credencial del despliegue —la identidad se la da la plataforma al
-pod, contra un trusted profile— pero requiere que DevOps lo haya creado y enlazado a la app.
-
-Conmutar es **una variable de entorno y un reinicio**, sin imagen nueva ni cambios de código, y
-el rollback es igual de barato:
-
-```bash
-ibmcloud ce app update --name content-ms \
-  --env SECRETS_AUTH_MODE=container \
-  --env SECRETS_IAM_PROFILE_NAME=contentms-sm-reader
-```
-
-El modo `container` se puede **ensayar en local** antes de pedir nada, contra el mismo stub:
-
-```bash
-SECRETS_AUTH_MODE=container \
-SECRETS_CR_TOKEN_FILE=deploy/secrets-manager-stub/cr-token \
-SECRETS_IAM_PROFILE_NAME=contentms-sm-reader \
-java -jar target/content-ms-1.0.0.jar --spring.profiles.active=local
-```
-
-No hay fallback automático de un modo al otro, a propósito: ver
+`IBM_CLOUD_API_KEY` es la única que no puede salir de Secrets Manager: es la llave con la que se
+abre. Va como **secreto de Code Engine**, y conviene que sea la de una service ID con
+`SecretsReader` acotado a la instancia — no una API key personal. Los pasos están en
 [secret-manager.md](secret-manager.md) §7.3.
+
+Hubo un segundo modo (`container`, con un trusted profile y sin ninguna credencial en el
+despliegue) que se retiró por falta de uso; el mecanismo sigue explicado en
+[credenciales-ibm-cloud.md](credenciales-ibm-cloud.md) §4.7.
 
 ### Variables del compose (no las lee el servicio)
 

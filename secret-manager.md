@@ -63,8 +63,7 @@ Se usa un único secreto de tipo **`kv`** (clave/valor), cuyo contenido es un ob
 ```json
 {
   "COS_API_KEY": "...",
-  "COS_SERVICE_INSTANCE_ID": "crn:v1:bluemix:public:cloud-object-storage:global:a/...:...::",
-  "REDIS_PASSWORD": "..."
+  "COS_SERVICE_INSTANCE_ID": "crn:v1:bluemix:public:cloud-object-storage:global:a/...:...::"
 }
 ```
 
@@ -80,6 +79,10 @@ existente (§3).
 distintos** —COS y Redis—, no las de una única instancia enlazada. `service_credentials` lo
 genera IBM al enlazar un servicio, su estructura la fija IBM y hay que navegarla a mano
 (`LinkedTreeMap` anidados); `kv` es un objeto plano que uno controla.
+
+Esa decisión se tomó antes de saber que el service credential es el mecanismo estándar de
+DevOps. El repaso completo de los mecanismos disponibles, lo que implicaría cambiar y lo que
+hace falta de todas formas está en §10.
 
 ### Solo lo secreto
 
@@ -143,20 +146,16 @@ pueden acabar en un 500 en la primera petición. Mismo criterio que
 Y los **valores nunca se loguean**. La única traza es de claves:
 
 ```
-Secrets Manager: 3 claves cargadas del secreto 'contentms-secrets' (grupo 'default')
-[COS_API_KEY, COS_SERVICE_INSTANCE_ID, REDIS_PASSWORD]
+Secrets Manager: 2 claves cargadas del secreto 'contentms-secrets' (grupo 'default')
+[COS_API_KEY, COS_SERVICE_INSTANCE_ID]
 ```
 
 ## 4. El huevo y la gallina: `IBM_CLOUD_API_KEY`
 
-Para leer el secreto hace falta autenticarse. Hay **dos formas**, y de cuál se use depende que
-quede o no una credencial suelta en el despliegue. Se elige con `secrets.auth-mode` (§7.3).
-
-### Modo `apikey` — el default
-
-Se autentica con una API key de IBM Cloud. **Esa credencial no puede estar dentro de Secrets
-Manager**: es la llave con la que se abre. Sigue siendo una variable de entorno plana, y es
-inevitable — con este modo y con cualquier gestor de secretos.
+Para leer el secreto hace falta autenticarse, y **esa credencial no puede estar dentro de
+Secrets Manager**: es la llave con la que se abre. Así que `IBM_CLOUD_API_KEY` sigue siendo una
+variable de entorno plana, y es inevitable — con este mecanismo y con cualquier gestor de
+secretos.
 
 Lo que sí cambia es el perfil de riesgo. Se pasa de N credenciales de servicio expuestas a
 **una sola**, que además:
@@ -166,28 +165,12 @@ Lo que sí cambia es el perfil de riesgo. Se pasa de N credenciales de servicio 
 - deja rastro en el log de actividad de Secrets Manager cada vez que se usa;
 - se rota en un sitio, no en tantos sitios como servicios.
 
-### Modo `container` — el huevo y la gallina desaparece
-
-Code Engine monta un token en el sistema de ficheros del pod; el SDK lo lee y lo canjea en IAM
-contra un **trusted profile**. **No queda ninguna credencial en el despliegue**: la identidad se
-la da la plataforma al pod, igual que IRSA en EKS o las workload identities de GCP.
-
-```
-/var/run/secrets/codeengine.cloud.ibm.com/compute-resource-token/token
-                    |
-                    v  el SDK lo lee del disco
-   POST https://iam.cloud.ibm.com/identity/token
-        grant_type = urn:ibm:params:oauth:grant-type:cr-token
-        cr_token   = <el contenido del fichero>
-        profile_name = <trusted profile>
-                    |
-                    v
-             token IAM normal  ->  y a partir de aquí, todo igual
-```
-
-El precio es una dependencia de la plataforma: hace falta que alguien cree el trusted profile y
-lo enlace a la app. Por eso el default sigue siendo `apikey` y el modo se conmuta con una
-variable de entorno (§7.3), sin tocar código ni imagen.
+> **Hubo un segundo modo y se retiró.** `secrets.auth-mode=container` usaba el token que Code
+> Engine monta en el pod, canjeado contra un trusted profile, y con él **no quedaba ninguna
+> credencial en el despliegue**. Se quitó porque nunca llegó a usarse y mantenerlo costaba tres
+> propiedades, un authenticator y un buen trozo de este documento. Si algún día se quiere
+> recuperar, el cambio se contiene en `SecretsManagerClients` — el mecanismo sigue explicado en
+> [credenciales-ibm-cloud.md](credenciales-ibm-cloud.md) §4.7.
 
 ## 5. Emulación en local
 
@@ -222,9 +205,6 @@ tiene su propia copia del `secret-kv.json`. En `infra/` no es estático: lo gene
 `secret-kv.json.template` con las credenciales de ese stack, y aborta si la sustitución no
 ocurre (ver [`infra/README.md`](infra/README.md)).
 
-El fichero `cr-token` para ensayar el modo `container` está en los dos sitios; usa el del
-entorno que tengas levantado.
-
 ### Dónde se setean los secretos en local
 
 En `deploy/secrets-manager-stub/mappings/secret-kv.json`, objeto `data`. Es el equivalente
@@ -235,8 +215,7 @@ local del secreto `kv`: el mismo JSON que en la consola de IBM, en otro sitio.
   "MINIO_ACCESS_KEY": "minioadmin",   // <- las usa de verdad el servicio
   "MINIO_SECRET_KEY": "minioadmin",
   "COS_API_KEY": "stub-cos-api-key",  // <- solo para que la forma sea la misma que fuera
-  "COS_SERVICE_INSTANCE_ID": "...",
-  "REDIS_PASSWORD": ""
+  "COS_SERVICE_INSTANCE_ID": "..."
 }
 ```
 
@@ -270,39 +249,6 @@ podman logs contentms-secrets-stub
 # 10.89.2.4 - GET /api/v2/secret_groups/default/secret_types/kv/secrets/contentms-secrets
 ```
 
-### Ensayar el modo `container` en local
-
-El `ContainerAuthenticator` lee el token de un fichero y lo canjea en el **mismo**
-`POST /identity/token` que el stub ya sirve: solo cambia el cuerpo del formulario. Por eso basta
-con apuntarle a un fichero de mentira, que viaja en el repo:
-
-```bash
-SECRETS_AUTH_MODE=container \
-SECRETS_CR_TOKEN_FILE=deploy/secrets-manager-stub/cr-token \
-SECRETS_IAM_PROFILE_NAME=contentms-sm-reader \
-java -jar target/content-ms-1.0.0.jar --spring.profiles.active=local
-```
-
-Arranca igual que en modo `apikey`, con la misma traza de claves cargadas. Que el canje fue
-realmente el del modo `container` se ve en el diario de peticiones de WireMock:
-
-```bash
-curl -s 'http://localhost:8090/__admin/requests?limit=2' | grep grant_type
-# grant_type=urn%3Aibm%3Aparams%3Aoauth%3Agrant-type%3Acr-token&cr_token=...&profile_name=...
-```
-
-frente al del modo por defecto:
-
-```
-# grant_type=urn%3Aibm%3Aparams%3Aoauth%3Agrant-type%3Aapikey&apikey=...
-```
-
-Así el modo deja de ser un salto de fe: se comprueba que el SDK lee el fichero, construye el
-canje correcto y sigue adelante, **antes** de pedirle nada a DevOps.
-
-Lo que esto **no** demuestra es que Code Engine monte de verdad el token en su ruta ni que el
-trusted profile tenga permiso. Eso solo se ve en el primer despliegue.
-
 ### Trabajar sin el stub
 
 ```bash
@@ -314,37 +260,49 @@ comportamiento exacto de antes de esta funcionalidad. Mismo patrón que `cache.e
 
 ## 6. Variables
 
-Comunes a los dos modos:
+Del acceso a Secrets Manager:
 
 | Variable | Default | Para qué |
 |---|---|---|
 | `SECRETS_ENABLED` | `true` | A `false` desactiva Secrets Manager por completo |
-| `SECRETS_AUTH_MODE` | `apikey` | `apikey` o `container` (§4, §7.3) |
 | `SECRETS_URL` | `http://localhost:8090` en `local`; **sin default** en `develop`/`production` | Endpoint de la instancia |
 | `SECRETS_IAM_URL` | `http://localhost:8090` en `local`; `https://iam.cloud.ibm.com` en el resto | Emisor del token. Admite la forma base y la completa (`.../identity/token`): el SDK normaliza las dos |
 | `SECRETS_NAME` | `contentms-secrets` | Nombre del secreto |
 | `SECRETS_GROUP` | `default` | Grupo que lo contiene |
 
-Solo en modo `apikey`:
+Y las del **service credential de Redis**, que es un secreto aparte (§10):
 
 | Variable | Default | Para qué |
 |---|---|---|
-| `IBM_CLOUD_API_KEY` | valor falso en `local`; vacío fuera | La API key con la que se lee el secreto (§4). **En modo `container` no debe existir** |
+| `SECRETS_REDIS_NAME` | `contentms-redis-credentials` | Nombre del secreto |
+| `SECRETS_REDIS_GROUP` | vacío = el mismo que `SECRETS_GROUP` | Grupo que lo contiene. Ver abajo |
 
-Solo en modo `container`:
+> **`SECRETS_GROUP` y `SECRETS_REDIS_GROUP` no son dos formas de decir lo mismo.** Son
+> **dos secretos distintos**, y cada uno vive en un grupo: `SECRETS_NAME`/`SECRETS_GROUP`
+> localizan el `kv` con las credenciales del COS, y `SECRETS_REDIS_NAME`/`SECRETS_REDIS_GROUP`
+> el `service_credentials` con la conexión a Redis. Son dos porque un service credential
+> pertenece a **una** instancia enlazada y no pueden compartir secreto.
+>
+> **En la práctica se configura solo `SECRETS_GROUP`**: `SECRETS_REDIS_GROUP` viene vacía a
+> propósito y entonces hereda el grupo del secreto principal, porque lo normal es que los
+> dos vivan juntos y repetirlo solo daría margen a que se desincronizaran. Se pone
+> únicamente si DevOps deja el secreto de Redis en otro grupo — y en ese caso, ojo: la
+> service ID necesita `SecretsReader` sobre **los dos** grupos.
+
+De ese secreto salen el host, el puerto, el usuario de ACL, la password, la base de datos y **la CA del TLS**, ya como propiedades `spring.data.redis.*` y `spring.ssl.bundle.pem.*`. **No lleva interruptor propio: lo manda `cache.enabled`.** Sin caché no hay conexión que configurar, y con caché encendida el secreto es obligatorio — si no se puede leer, la aplicación no arranca. Los `cache.yaml` ya no declaran `spring.data.redis.*`, así que este secreto es su única fuente.
+
+Y la credencial del arranque:
 
 | Variable | Default | Para qué |
 |---|---|---|
-| `SECRETS_IAM_PROFILE_NAME` | vacío | Nombre del trusted profile. Obligatorio, salvo que se use el id |
-| `SECRETS_IAM_PROFILE_ID` | vacío | Alternativa al nombre |
-| `SECRETS_CR_TOKEN_FILE` | vacío | Fichero del que leer el token del pod. Vacío deja que el SDK pruebe sus tres rutas por defecto, una de las cuales es la de Code Engine. Solo hace falta fijarlo para ensayar en local (§5) o en un runtime que lo monte en otro sitio |
+| `IBM_CLOUD_API_KEY` | valor falso en `local`; **sin default** en `develop`/`production` | La API key con la que se lee el secreto (§4). Obligatoria |
 
 Configuración en `src/main/resources/parameters/<perfil>/secrets.yaml`.
 
-`IBM_CLOUD_API_KEY` lleva default vacío en `develop`/`production` a propósito: sin él, el
-arranque en modo `container` reventaría por un placeholder sin resolver antes de poder decir
-nada útil. El fallo rápido no se pierde, se mueve — si falta estando en modo `apikey`, la
-validación de `IbmSecretsManagerSource` lo dice nombrando el modo.
+`IBM_CLOUD_API_KEY` **no lleva default** en `develop`/`production`: falta ella, no arranca, y
+se ve al desplegar. Es seguro declararla así porque `SecretsEnvironmentPostProcessor` enlaza
+`secrets.enabled` aparte y antes que el resto, de modo que con `SECRETS_ENABLED=false` ese
+placeholder no llega a resolverse nunca.
 
 ## 7. Despliegue en producción
 
@@ -356,22 +314,18 @@ sobra. Los dos primeros se hacen una vez.
 Los valores de `secrets.*` son el **bootstrap**: la configuración necesaria para *llegar* al
 secreto, así que por definición no pueden salir de él. Pero casi todos **no son secretos** —una
 URL, un nombre, un grupo, un flag— y van como variables de entorno normales. La única que lo es
-resulta ser, además, la que desaparece en modo `container` (§4).
+de verdad es la API key (§4).
 
 | Variable | De dónde sale | ¿Hay que ponerla? |
 |---|---|---|
 | `SECRETS_ENABLED` | — | No, el default `true` vale |
-| `SECRETS_AUTH_MODE` | Lo decides tú (§7.3) | No, el default `apikey` es lo que ya funciona |
 | `SECRETS_URL` | El endpoint de tu instancia (§7.2) | **Sí** |
 | `SECRETS_IAM_URL` | Fijo de IBM Cloud | No, salvo endpoint privado (§7.2) |
 | `SECRETS_NAME` | El nombre que le diste al secreto | No, si lo llamas `contentms-secrets` |
 | `SECRETS_GROUP` | El grupo donde lo creaste | No, si usas `default` |
-| `IBM_CLOUD_API_KEY` | API key de una service ID que creas tú (§7.3) | **Sí en modo `apikey`**, como secreto de Code Engine. En modo `container` **no debe existir** |
-| `SECRETS_IAM_PROFILE_NAME` | El trusted profile que enlaza DevOps (§7.3) | **Sí en modo `container`** |
-| `SECRETS_CR_TOKEN_FILE` | — | No: el SDK ya conoce la ruta de Code Engine |
+| `IBM_CLOUD_API_KEY` | API key de una service ID que creas tú (§7.3) | **Sí**, como secreto de Code Engine |
 
-En la práctica, en producción **se ponen dos cosas**: `SECRETS_URL` y la credencial que
-corresponda al modo.
+En la práctica, en producción **se ponen dos cosas**: `SECRETS_URL` e `IBM_CLOUD_API_KEY`.
 
 ### 7.2 El endpoint: `SECRETS_URL`
 
@@ -397,18 +351,7 @@ Requiere tener habilitados los service endpoints y VRF en la cuenta. Si se usa,
 `SECRETS_IAM_URL` pasa a ser `https://private.iam.cloud.ibm.com`; si no, no se toca ninguna de
 las dos.
 
-### 7.3 La identidad: elegir modo
-
-Aquí es donde se decide si queda o no una credencial en el despliegue (§4). El default es
-`apikey`, así que **si no se hace nada, el despliegue funciona y no hay que pedirle nada nuevo a
-DevOps**.
-
-| Modo | Credencial en el despliegue | Lo que hay que pedirle a DevOps |
-|---|---|---|
-| `apikey` (default) | `IBM_CLOUD_API_KEY` | Una service ID con `SecretsReader` y su API key |
-| `container` | Ninguna | Un trusted profile con `SecretsReader`, enlazado a la app de Code Engine |
-
-#### Modo `apikey`
+### 7.3 La identidad: la service ID que lee el secreto
 
 **No uses tu API key personal ni la de la cuenta.** Crea una service ID con permiso de solo
 lectura sobre Secrets Manager:
@@ -432,56 +375,11 @@ borrar. Para acotarla además a un único grupo de secretos, los flags `--resour
 `--resource` de `ibmcloud iam service-policy-create --help`: varían entre versiones del CLI,
 conviene mirarlos ahí.
 
-#### Modo `container`
-
-En vez de una service ID, un **trusted profile** al que se le da el mismo rol y que se enlaza a
-la app de Code Engine como identidad de recurso de cómputo. La app no lleva credencial: recibe
-del pod un token que el SDK canjea contra ese perfil.
-
-Esta parte es trabajo de DevOps en IBM Cloud (crear el perfil, darle `SecretsReader` sobre la
-instancia y enlazarlo a la app). Del lado del servicio no hay nada que hacer más que decirle el
-nombre del perfil.
-
-#### Conmutar y volver atrás
-
-Es una variable de entorno y un reinicio. Ni imagen nueva, ni código, ni despliegue distinto:
+Esa API key va como **secreto de Code Engine**, no como variable en claro:
 
 ```bash
-# a modo container
-ibmcloud ce app update --name content-ms \
-  --env SECRETS_AUTH_MODE=container \
-  --env SECRETS_IAM_PROFILE_NAME=contentms-sm-reader
-
-# rollback
-ibmcloud ce app update --name content-ms --env SECRETS_AUTH_MODE=apikey
-```
-
-Se puede dejar `IBM_CLOUD_API_KEY` puesta mientras se prueba `container`: en ese modo se
-ignora, y volver a `apikey` es inmediato. Cuando el modo `container` esté consolidado, quítala.
-
-También se puede probar `container` **solo en develop** y dejar production en `apikey`: son
-perfiles distintos con variables distintas.
-
-Un matiz: el secreto se lee una sola vez al arrancar, así que conmutar implica reiniciar el pod.
-No es un flag en caliente.
-
-#### Por qué no hay fallback automático
-
-Tentaría intentar `container` y caer a `apikey` si falla. **No se hace**, por la misma razón por
-la que un fallo de secreto no arranca la app en vez de degradar en silencio (§3):
-
-- No se sabría con qué identidad corre el servicio, y el log de auditoría de Secrets Manager
-  mostraría accesos de las dos sin poder explicar cuál fue cuándo.
-- Un trusted profile mal configurado quedaría tapado por el fallback y la migración no se
-  completaría nunca — el mismo fallo silencioso que un `COS_API_KEY` olvidado ganándole al
-  secreto (§7.6).
-
-El modo es explícito, y un modo mal configurado **no arranca**, con un mensaje que dice qué
-falta:
-
-```
-IllegalStateException: Con secrets.auth-mode=container hace falta secrets.iam-profile-name
-o secrets.iam-profile-id: es el trusted profile contra el que se canjea el token del pod
+ibmcloud ce secret create --name contentms-sm --from-literal IBM_CLOUD_API_KEY=<la key>
+ibmcloud ce app update --name content-ms --env-from-secret contentms-sm
 ```
 
 ### 7.4 Crear el secreto
@@ -497,8 +395,7 @@ ibmcloud secrets-manager secret-create \
     "description": "Credenciales de ContentMS",
     "data": {
       "COS_API_KEY": "...",
-      "COS_SERVICE_INSTANCE_ID": "crn:v1:bluemix:public:cloud-object-storage:global:a/...:...::",
-      "REDIS_PASSWORD": "..."
+      "COS_SERVICE_INSTANCE_ID": "crn:v1:bluemix:public:cloud-object-storage:global:a/...:...::"
     }
   }'
 
@@ -523,15 +420,6 @@ ibmcloud ce app update --name content-ms \
   --env-from-secret contentms-bootstrap
 ```
 
-En modo `container` no hay ningún secreto que crear — solo variables normales:
-
-```bash
-ibmcloud ce app update --name content-ms \
-  --env SECRETS_URL=https://<guid>.us-south.secrets-manager.appdomain.cloud \
-  --env SECRETS_AUTH_MODE=container \
-  --env SECRETS_IAM_PROFILE_NAME=contentms-sm-reader
-```
-
 ### 7.6 Quitar lo que sobra
 
 Es lo que más fácil se olvida:
@@ -549,24 +437,14 @@ leyéndose para nada y la migración no estaría hecha de verdad.
 En el arranque tiene que aparecer, sin excepción previa:
 
 ```
-Secrets Manager: 3 claves cargadas del secreto 'contentms-secrets' (grupo 'default')
-[COS_API_KEY, COS_SERVICE_INSTANCE_ID, REDIS_PASSWORD]
+Secrets Manager: 2 claves cargadas del secreto 'contentms-secrets' (grupo 'default')
+[COS_API_KEY, COS_SERVICE_INSTANCE_ID]
 ```
 
 Si la credencial no tiene permiso, esa línea no aparece: **la app no arranca** y el log lleva el
-`IllegalStateException: No se pudo leer el secreto ...`, que además dice **con qué modo** se
-intentó, y el 403 del SDK debajo. Es deliberado (§3): un fallo de credenciales tiene que verse
-al desplegar, no en la primera petición.
-
-En modo `container`, un fallo típico es que el pod no tenga el token montado; el mensaje lo
-delata:
-
-```
-IllegalStateException: No se pudo leer el secreto 'contentms-secrets' ... con autenticacion 'container'
-Caused by: java.lang.RuntimeException: Error reading CR token file: /var/run/secrets/...
-```
-
-lo que apunta a que el trusted profile no está enlazado a la app.
+`IllegalStateException: No se pudo leer el secreto ...`, que nombra el secreto, el grupo y la
+instancia, con el 403 del SDK debajo. Es deliberado (§3): un fallo de credenciales tiene que
+verse al desplegar, no en la primera petición.
 
 ## 8. Añadir un secreto nuevo
 
@@ -580,7 +458,157 @@ No hay paso 3: no se toca código Java.
 - **Otro tipo de secreto** (`service_credentials`, `arbitrary`): `IbmSecretsManagerSource` solo
   lee `kv`, y lo dice explícitamente si le llega otro tipo. Para soportar más, el cambio se
   contiene en esa clase — `SecretsSource` devuelve un `Map` y a nadie más le importa de dónde
-  sale.
+  sale. Los tipos que existen y cuándo conviene cada uno, en §10.
 - **Más de un secreto**: hoy se lee uno. Leer varios y fusionarlos es un bucle en el
-  post-processor.
+  post-processor. Haría falta si se pasa a `service_credentials`, que es un secreto por
+  instancia enlazada (§10.1).
 - **Rotación en caliente**: fuera de alcance, ver §3.
+
+## 10. Los mecanismos para obtener una credencial de conexión
+
+Esta sección es el contexto de la decisión de §2, escrita después de que DevOps confirmara que
+el mecanismo estándar de la organización es el **service credential**, y que el proyecto de
+referencia `ap6616-cos-documents-ms-app-repo` lo usa así para MongoDB (`GetCredentialsCommand`
++ `GetCredentialsRequestFactory`).
+
+No es una lista de alternativas equivalentes: cada una entrega **cosas distintas**, rota de
+forma distinta y se ensaya de forma distinta. Lo que sigue es cómo funciona cada una y qué hay
+que tener en cuenta al elegir.
+
+> Esta sección asume el vocabulario y da la conclusión. Si lo que buscas es entender los
+> mecanismos desde cero, con diagramas y ejemplos, el documento es
+> **[credenciales-ibm-cloud.md](credenciales-ibm-cloud.md)**.
+
+### 10.1 Los mecanismos
+
+**1. Variable de entorno plana en el despliegue.** Alguien copia el valor a la configuración de
+la app. Es lo que hacía este servicio antes de §1. Cero infraestructura; sin rotación, sin
+auditoría, visible para cualquiera con permiso de lectura sobre la app. Sigue siendo el
+mecanismo del **bootstrap**: de algo tiene que arrancar la cadena (§4).
+
+**2. Secret de Code Engine, como variable o montado como volumen.** El valor vive en un objeto
+`secret` de la plataforma, no en el env de la app. Mejora el control de acceso, pero la rotación
+sigue siendo manual y no hay log de accesos. Montado como volumen permite releer sin reiniciar;
+inyectado como variable, no.
+
+**3. Service binding de Code Engine.** Se enlaza la instancia de servicio a la app y la
+plataforma inyecta las credenciales como variables de entorno con prefijo, más un JSON
+agregado. No hay SDK, ni llamada HTTP, ni credencial de bootstrap. En cambio la forma la pone
+IBM y varía por servicio, rotar implica re-bindear y reiniciar, y **no se puede emular en
+local**: se prueba desplegando.
+
+**4. Secrets Manager, tipo `kv` o `arbitrary`.** *Lo que usa este servicio.* El contenido lo
+escribe uno: `arbitrary` es un `payload` de texto, `kv` un objeto JSON plano. Se lee con
+`getSecretByNameType` y `secret.getData()`. Como la forma la controlamos, las claves se llaman
+igual que las variables de los YAML y no hay ni una línea de mapeo (§2, §3). El precio es que
+**el contenido se copia a mano**: si IBM regenera la credencial del servicio, hay que
+actualizar el `kv`. No hay rotación automática, porque IBM no sabe qué hay dentro.
+
+**5. Secrets Manager, tipo `service_credentials`.** *Lo que usa DevOps.* Se le indica la
+instancia y el rol, y Secrets Manager **crea él mismo la service credential** contra ese
+servicio y guarda la respuesta en un objeto `credentials` anidado. Se lee con el mismo
+`getSecretByNameType`, pero el resultado se saca con `getCredentials()` y hay que navegar
+`connection.<servicio>.…` a mano. Es el único que **puede rotar solo** —Secrets Manager
+regenera la credencial en el servicio y guarda una versión nueva—, y de ahí que sea el
+estándar. A cambio: la forma la fija IBM, el mapeo es código, y **un secreto es una instancia
+enlazada**, así que COS y Redis serían dos secretos (§9, "más de un secreto").
+
+**6. Secrets Manager, tipo `iam_credentials`.** Secrets Manager crea API keys de IAM dinámicas
+contra una service ID, opcionalmente con TTL: la credencial nace al pedirla y muere al expirar.
+Es el más fuerte para lo que se autentica con IAM —el COS es exactamente ese caso—, y **no
+sirve para Redis**, que usa usuario/password de ACL, no IAM. Si la credencial es efímera, la
+app tiene que poder releer, y aquí se lee una sola vez al arrancar (§3).
+
+**7. Identidad de plataforma (trusted profile / compute resource token).** No es un almacén: es
+la respuesta al huevo y la gallina. Code Engine monta un token en el pod, el SDK lo canjea en
+IAM contra un trusted profile y **no queda ninguna credencial en el despliegue**. Estuvo
+implementado aquí y se retiró por falta de uso (§4). Elimina la credencial de bootstrap, y en
+teoría podría eliminar también la del COS, que habla IAM — pero **nunca la de Redis**.
+
+### 10.2 Lo transversal
+
+**Una credencial de conexión no es solo usuario y password.** Es lo que más se subestima. El
+service credential real de Redis (`service-credentials/serviceCredentialsRedis.json`) trae:
+
+```
+scheme:                  rediss                     <- TLS obligatorio
+hostname:                42e60302-….private.databases.appdomain.cloud
+port:                    31273
+authentication.username  ibm_cloud_e7d765a7_…       <- usuario de ACL, no solo password
+database:                0
+certificate_authority:   self_signed                <- la JVM no confia en esa CA
+certificate_base64:      LS0tLS1CRUdJTi…            <- hay que construir un truststore
+```
+
+Son cinco campos más allá de la password, y el certificado es el peor: es una CA que la JVM no
+conoce. Hoy `parameters/{develop,production}/cache.yaml` solo tiene `host`, `port` y `password`
+—no existe `spring.data.redis.username` ni `ssl` en ningún sitio del repo, y la
+`RedisConnectionFactory` sale entera de la autoconfiguración—, así que **con la configuración
+actual el servicio no puede conectarse a una instancia de Databases for Redis provisionada así,
+se lea el secreto como se lea**. No es un problema de *de dónde* sale la credencial, sino de
+*qué campos* necesita la conexión.
+
+**Rotación y cuándo se lee.** Se lee una sola vez, en el `EnvironmentPostProcessor`, antes de
+que exista el contexto (§3). Eso encaja con `kv` y con un `service_credentials` estático —rotar
+es reiniciar el pod— y **no** encaja con credenciales de TTL corto. Un `iam_credentials` con
+expiración obligaría a cambiar ese modelo.
+
+**El bootstrap siempre existe.** Para leer del gestor hace falta identidad: o una API key plana,
+o el token de la plataforma. No hay tercera opción, y solo la segunda deja el despliegue sin
+ninguna credencial (§4).
+
+**Precedencia.** El secreto se registra con `addLast()`, así que una variable de entorno real
+**gana** al secreto (§3). Es la vía de escape, y es la trampa: un `COS_API_KEY` olvidado en el
+despliegue silencia el secreto sin decir nada.
+
+**Fallar al arrancar frente a degradar.** Un secreto ilegible mata el arranque (§3); la caché
+degrada a *miss*. Combinadas tienen un efecto que conviene tener presente: si las credenciales
+de Redis llegan bien pero el TLS falla, `CacheConfig.errorHandler()` lo baja a WARN,
+`management.health.redis.enabled` está en `false` en todos los perfiles, y **el servicio
+responde 200 en todo con una caché que no cachea nada**. Ese fallo solo se ve con
+`redis-cli KEYS`, nunca con un health check.
+
+**Endpoint público frente a privado.** El hostname del service credential es
+`…private.databases.appdomain.cloud`: eso no es un detalle del secreto, es conectividad. Solo
+resuelve desde dentro, con los service endpoints habilitados. Un secreto perfecto contra un
+endpoint inalcanzable falla igual. Mismo asunto que el endpoint privado de Secrets Manager
+(§7.2).
+
+**Cómo se ensaya en local.** Cuanto más dependa el mecanismo de la plataforma, menos se puede
+probar antes de desplegar. `kv` y `service_credentials` se emulan igual de bien con el WireMock
+que ya está —mismo SDK, mismo camino de código, otra URL (§5)—; un service binding no.
+
+### 10.3 Qué implicaría cambiar, y qué hace falta de todas formas
+
+Son dos decisiones separables, y no dependen una de la otra:
+
+- **Redis necesita `username`, `ssl.enabled`, un truststore construido en arranque desde el
+  `certificate_base64`, y acceso al endpoint privado.** Hace falta con `kv`, con
+  `service_credentials` y con service binding. Es lo que hoy bloquea la caché en `develop` y
+  `production`, y es lo urgente.
+- **Para el COS sí hay elección real, y no hay que tomarla todavía.** `service_credentials` si
+  DevOps lo va a entregar así; `iam_credentials` si se quieren API keys rotadas por IBM; o
+  seguir con `kv` y no tocar nada. Los tres se leen con el mismo `getSecretByNameType` que ya
+  usa `IbmSecretsManagerSource`: cambia el `secretType` y el parseo.
+
+Si se migra a `service_credentials`, el trabajo está en cuatro sitios: el `secretType` y el
+parseo en `IbmSecretsManagerSource` (la aserción de tipo y el `return secret.getData()`), un
+bucle en `SecretsEnvironmentPostProcessor` para leer dos secretos, la forma de `secrets.*` en
+los YAML y su tabla de variables (§6), y el segmento `secret_types/kv`, que está hardcoded en
+cinco sitios del stub: `deploy/secrets-manager-stub/mappings/secret-kv.json`,
+`infra/conf/secrets-manager-stub/mappings/secret-kv.json`, su `.template`, el `SECRET_PATH` de
+`infra/reload-secret.sh` y las constantes de fichero de `infra/up.sh`.
+
+Un camino intermedio, si se decide seguir: mantener `kv` como default y añadir el tipo como
+propiedad conmutable. El punto de extensión ya está contenido en `IbmSecretsManagerSource`
+(§9).
+
+### 10.4 Preguntas abiertas para DevOps
+
+1. ¿Se entregarán COS y Redis como **dos** service credentials, o el COS se queda como está?
+2. ¿Se accede al endpoint `…private.databases.appdomain.cloud` desde Code Engine, o hay uno
+   público? ¿Están habilitados los service endpoints y VRF en la cuenta?
+3. ¿Se confirma que el TLS es obligatorio y que el `certificate_base64` del secreto es la CA
+   que hay que confiar? ¿O IBM publica esa CA en algún sitio estable?
+4. ¿Quién regenera el service credential, con qué frecuencia, y avisa? Al leerse una sola vez
+   al arrancar, una rotación exige reiniciar el pod (§3).

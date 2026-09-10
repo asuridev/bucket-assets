@@ -21,6 +21,21 @@ NGINX_CONF=conf/mongo-ui.conf
 STUB_DIR=conf/secrets-manager-stub
 STUB_TEMPLATE=$STUB_DIR/secret-kv.json.template
 STUB_SECRET=$STUB_DIR/mappings/secret-kv.json
+# El segundo secreto: el service credential de Redis. Va aparte porque un
+# service_credentials pertenece a UNA instancia enlazada y no puede compartir secreto con las
+# credenciales del COS. Ver credenciales-ibm-cloud.md.
+STUB_REDIS_TEMPLATE=$STUB_DIR/secret-redis.json.template
+STUB_REDIS_SECRET=$STUB_DIR/mappings/secret-redis.json
+
+# Certificados del Redis con TLS. Los genera este script (no se commitean) y se montan en el
+# contenedor; la CA ademas viaja dentro del secreto que sirve el stub, que es como llega a la
+# aplicacion en Code Engine.
+REDIS_TLS_DIR=conf/redis-tls
+# Usuario de ACL con el que se conecta la aplicacion, para ejercitar el
+# spring.data.redis.username que exige la instancia real. Tiene que coincidir con
+# services/redis.yaml y con la plantilla del secreto.
+REDIS_ACL_USER=contentms
+REDIS_ACL_PASSWORD=contentms-local
 
 # Credenciales de MinIO, en UN solo sitio. up.sh las sustituye en services/minio.yaml,
 # services/minio-init.yaml y en la plantilla del secreto que consume el stub de Secrets
@@ -177,11 +192,81 @@ render() {
     -e "s|__ORACLE_USER__|$ORACLE_USER|g" \
     -e "s|__ORACLE_PASSWORD__|$ORACLE_PASSWORD|g" \
     -e "s|__ORACLE_SERVICE__|$ORACLE_SERVICE|g" \
+    -e "s|__REDIS_ACL_USER__|$REDIS_ACL_USER|g" \
+    -e "s|__REDIS_ACL_PASSWORD__|$REDIS_ACL_PASSWORD|g" \
     "services/$1" >> "$COMPOSE_FILE"
   echo >> "$COMPOSE_FILE"
 }
 
+# --- certificados del Redis con TLS --------------------------------------------------
+# La instancia real de IBM solo habla TLS, con una CA AUTOFIRMADA que la JVM no conoce y que
+# viaja dentro del propio secreto. Aqui se reproduce eso: una CA propia, un certificado de
+# servidor firmado por ella, y la CA metida en el secreto que sirve el stub. Sin esto, el
+# ensayo local probaria el parseo del secreto pero no el truststore ni el handshake, que es
+# justo la parte que no existia y mas riesgo tiene.
+#
+# Se generan SOLO SI FALTAN, igual que el secreto: regenerarlos en cada ./up.sh invalidaria
+# la CA que ya esta dentro del secreto renderizado.
+ensure_redis_tls() {
+  if [ -f "$REDIS_TLS_DIR/ca.crt" ] && [ "$REGEN_SECRET" = no ]; then
+    echo "Certificados de Redis conservados en infra/$REDIS_TLS_DIR"
+    return 0
+  fi
+
+  command -v openssl >/dev/null 2>&1 || die "hace falta openssl para generar los certificados
+  del Redis con TLS. Alternativas: instalarlo, generar a mano infra/$REDIS_TLS_DIR/{ca.crt,ca.key,redis.crt,redis.key}
+  (los comandos estan en infra/README.md), o arrancar la aplicacion sin cache con CACHE_ENABLED=false"
+
+  mkdir -p "$REDIS_TLS_DIR"
+
+  # En Git Bash / MSYS, un argumento que empieza por "/" se convierte en ruta de Windows: el
+  # -subj "/CN=infra-redis-ca" llega a openssl como "C:/Program Files/Git/CN=infra-redis-ca" y
+  # falla con un mensaje sobre el formato del subject que no menciona la conversion. Estas dos
+  # variables la desactivan, y en Linux no existen y no molestan.
+  MSYS_NO_PATHCONV=1
+  MSYS2_ARG_CONV_EXCL='*'
+  export MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
+
+  # El SAN NO es opcional: Lettuce verifica el hostname por defecto, y la aplicacion conecta a
+  # localhost:6380. Se incluye tambien `redis` (el nombre del servicio en la red del compose)
+  # por si algun dia conecta desde otro contenedor.
+  # El fichero de extensiones va aqui dentro y con ruta RELATIVA, no en $(mktemp): en Git Bash
+  # mktemp devuelve algo como /tmp/tmp.XXXX, que es una ruta de MSYS que el openssl de Windows
+  # no sabe abrir -- y con la conversion de rutas ya desactivada, nadie se la traduce.
+  EXT=$REDIS_TLS_DIR/openssl.ext
+  printf 'subjectAltName=DNS:localhost,DNS:redis,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$EXT"
+
+  openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+    -keyout "$REDIS_TLS_DIR/ca.key" -out "$REDIS_TLS_DIR/ca.crt" \
+    -subj "/CN=infra-redis-ca" -addext "basicConstraints=critical,CA:TRUE" 2>/dev/null \
+    || die "openssl no pudo crear la CA en infra/$REDIS_TLS_DIR"
+
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "$REDIS_TLS_DIR/redis.key" -out "$REDIS_TLS_DIR/redis.csr" \
+    -subj "/CN=localhost" 2>/dev/null \
+    || die "openssl no pudo crear la peticion de certificado del servidor"
+
+  openssl x509 -req -in "$REDIS_TLS_DIR/redis.csr" -sha256 -days 3650 \
+    -CA "$REDIS_TLS_DIR/ca.crt" -CAkey "$REDIS_TLS_DIR/ca.key" -CAcreateserial \
+    -out "$REDIS_TLS_DIR/redis.crt" -extfile "$EXT" 2>/dev/null \
+    || die "openssl no pudo firmar el certificado del servidor con la CA"
+
+  rm -f "$EXT" "$REDIS_TLS_DIR/redis.csr"
+  # Redis corre como usuario no root dentro del contenedor y tiene que poder leer la clave.
+  chmod 644 "$REDIS_TLS_DIR/redis.key" "$REDIS_TLS_DIR/ca.key" 2>/dev/null || true
+
+  # El secreto lleva dentro la CA, asi que una CA nueva obliga a rehacerlo: si no, el stub
+  # seguiria sirviendo la vieja y el handshake fallaria en silencio (la cache degrada a miss).
+  REGEN_SECRET=yes
+  echo "Certificados de Redis generados en infra/$REDIS_TLS_DIR (CA autofirmada, SAN localhost)"
+}
+
 VOLUMES=""
+if has redis || has ibm-secret-manager; then
+  # Tambien con solo el stub: el secreto que sirve lleva la CA dentro, asi que tiene que
+  # existir aunque el contenedor de Redis no se levante en esta ejecucion.
+  ensure_redis_tls
+fi
 if has redis; then
   render redis.yaml
   render redis-commander.yaml
@@ -255,7 +340,10 @@ if has ibm-secret-manager; then
     # marcadores literales y el fallo se veria mucho mas tarde, al subir un archivo.
     # En forma de `if` y no `grep ... && die`: un AND-OR list cuyo lado izquierdo falla se
     # comporta distinto segun la shell, y aqui no sabemos cual corre en DevX.
-    if grep -q "__MINIO_" "$STUB_SECRET"; then
+    #
+    # El patron es generico (__LO_QUE_SEA__) y no "__MINIO_": hay mas de un secreto y mas de
+    # un marcador, y una guarda que solo mira uno deja pasar los demas en silencio.
+    if grep -qE "__[A-Z0-9_]+__" "$STUB_SECRET"; then
       die "quedaron marcadores sin sustituir en $STUB_SECRET"
     fi
     if [ "$REGEN_SECRET" = yes ]; then
@@ -263,6 +351,38 @@ if has ibm-secret-manager; then
     else
       echo "Secreto del stub generado en infra/$STUB_SECRET (MinIO: $MINIO_USER)"
     fi
+  fi
+
+  # --- segundo secreto: el service credential de Redis -------------------------------
+  # Mismo criterio que el de arriba (solo si falta, --regen-secret para rehacerlo), con una
+  # diferencia: este lleva dentro la CA del TLS, asi que se rehace SIEMPRE que se hayan
+  # regenerado los certificados -- ensure_redis_tls() pone REGEN_SECRET=yes justo para eso.
+  # Servir una CA que ya no firma nada daria un handshake fallido, y ese fallo es silencioso:
+  # la cache degrada a miss y todo sigue respondiendo 200.
+  if [ -f "$STUB_REDIS_SECRET" ] && [ "$REGEN_SECRET" = no ]; then
+    echo "Service credential de Redis conservado en infra/$STUB_REDIS_SECRET"
+  else
+    [ -f "$STUB_REDIS_TEMPLATE" ] || die "no encuentro $STUB_REDIS_TEMPLATE"
+    [ -f "$REDIS_TLS_DIR/ca.crt" ] || die "no encuentro infra/$REDIS_TLS_DIR/ca.crt: el
+  service credential lleva la CA dentro. Levanta con 'redis' o 'ibm-secret-manager' para que
+  se generen los certificados"
+
+    # `base64 -w0` es de GNU coreutils y NO existe en BusyBox ni en macOS: el `tr` hace lo
+    # mismo en todas partes. Tiene que ir en una sola linea porque acaba dentro de un JSON.
+    REDIS_CA_BASE64=$(base64 < "$REDIS_TLS_DIR/ca.crt" | tr -d '\n\r')
+    [ -n "$REDIS_CA_BASE64" ] || die "la codificacion en base64 de infra/$REDIS_TLS_DIR/ca.crt salio vacia"
+
+    # El certificado va con `s|...|...|` como el resto, y por eso la CA se codifica en base64
+    # ANTES: un PEM en crudo lleva saltos de linea y barras, que romperian el sed.
+    sed -e "s|__REDIS_ACL_USER__|$REDIS_ACL_USER|g" \
+        -e "s|__REDIS_ACL_PASSWORD__|$REDIS_ACL_PASSWORD|g" \
+        -e "s|__REDIS_CA_BASE64__|$REDIS_CA_BASE64|g" \
+        "$STUB_REDIS_TEMPLATE" > "$STUB_REDIS_SECRET"
+
+    if grep -qE "__[A-Z0-9_]+__" "$STUB_REDIS_SECRET"; then
+      die "quedaron marcadores sin sustituir en $STUB_REDIS_SECRET"
+    fi
+    echo "Service credential de Redis generado en infra/$STUB_REDIS_SECRET (usuario ACL: $REDIS_ACL_USER, CA: $REDIS_TLS_DIR/ca.crt)"
   fi
 fi
 
@@ -332,13 +452,35 @@ fi
 # Y ademas se comprueba que los contenedores existen de verdad. No sobra: se ha visto un
 # `up -d` terminar con codigo 0 y sin crear nada (con el pull cortado), y entonces el resumen
 # de abajo estaria mintiendo, que es peor que no imprimir nada.
-CREATED=$($RUNTIME ps -a --format '{{.Names}}' 2>/dev/null || true)
+# Se pregunta por cada contenedor con `inspect`, y no filtrando la salida de `ps -a`: esa
+# depende de una plantilla de formato y de que el `ps` haya ido bien, y una salida vacia por
+# cualquier motivo se leeria como "no hay nada creado" -- un falso positivo que tapa el fallo
+# de verdad. `inspect` responde por el nombre exacto y su codigo de salida no es ambiguo.
 MISSING=""
 for name in $(grep -E '^    container_name:' "$COMPOSE_FILE" | awk '{print $2}'); do
-  echo "$CREATED" | grep -qx "$name" || MISSING="$MISSING $name"
+  $RUNTIME container inspect "$name" >/dev/null 2>&1 || MISSING="$MISSING $name"
 done
-[ -z "$MISSING" ] || die "el compose termino sin error pero faltan contenedores:$MISSING
-  Revisa la salida de arriba y '$RUNTIME logs <contenedor>'."
+
+# Y estar creado no basta: lo que interesa es si sigue vivo. Un contenedor que arranca y se
+# muere (Oracle sin memoria suficiente, por ejemplo) deja el stack inservible aunque exista.
+# minio-init es la excepcion legitima: es un trabajo de un solo uso y termina siempre.
+DEAD=""
+for name in $(grep -E '^    container_name:' "$COMPOSE_FILE" | awk '{print $2}'); do
+  [ "$name" = infra-minio-init ] && continue
+  echo " $MISSING " | grep -q " $name " && continue
+  state=$($RUNTIME container inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo desconocido)
+  [ "$state" = running ] || DEAD="$DEAD $name($state)"
+done
+
+if [ -n "$MISSING" ] || [ -n "$DEAD" ]; then
+  echo >&2
+  [ -z "$MISSING" ] || echo "No se llegaron a crear:$MISSING" >&2
+  [ -z "$DEAD" ] || echo "Se crearon pero no estan corriendo:$DEAD" >&2
+  echo >&2
+  echo "Esto es lo que ve $RUNTIME ahora mismo:" >&2
+  $RUNTIME ps -a >&2 || true
+  die "el stack no quedo levantado. Mira '$RUNTIME logs <contenedor>' del que fallo."
+fi
 
 # --- resumen --------------------------------------------------------------------------
 echo
@@ -357,12 +499,22 @@ if has ibm-secret-manager; then
   echo "   NO es una UI y NO necesita Add Port: la consume la aplicacion, no el navegador."
   echo "   El perfil 'local' ya apunta ahi por defecto, asi que no hay que exportar nada."
   echo "   Valores del secreto: infra/$STUB_SECRET"
-  echo "   Ese fichero esta montado en vivo en el contenedor y SE CONSERVA entre ./up.sh:"
-  echo "   editalo y lanza ./reload-secret.sh para que el stub lo relea sin recrear nada."
+  echo "   Service credential de Redis (TLS): infra/$STUB_REDIS_SECRET"
+  echo "   Esos ficheros estan montados en vivo en el contenedor y SE CONSERVAN entre ./up.sh:"
+  echo "   editalos y lanza ./reload-secret.sh para que el stub los relea sin recrear nada."
+  echo
+fi
+if has redis; then
+  echo " Redis habla en DOS puertos: 6379 en claro y 6380 con TLS"
+  echo "   6380 es el que usa la aplicacion, y sale del service credential del stub."
+  echo "   Comprobar el TLS:  openssl s_client -connect localhost:6380 -CAfile infra/$REDIS_TLS_DIR/ca.crt"
+  echo "   Ver las claves:    redis-cli --tls --cacert infra/$REDIS_TLS_DIR/ca.crt -p 6380 \\"
+  echo "                        --user $REDIS_ACL_USER --pass $REDIS_ACL_PASSWORD KEYS 'contentms:*'"
+  echo "   Sin cache (y sin leer el secreto de Redis): CACHE_ENABLED=false"
   echo
 fi
 echo " Conexiones desde OTRO CONTENEDOR de este compose (por nombre de servicio)"
-has redis && echo "   Redis    redis:6379                                   sin auth"
+has redis && echo "   Redis    redis:6379 (claro, sin auth)   redis:6380 (TLS, $REDIS_ACL_USER)"
 has mongo && echo "   MongoDB  mongodb://admin:admin@mongo:27017/?authSource=admin"
 has minio && echo "   MinIO    http://minio:9000   $MINIO_USER / $MINIO_PASSWORD   bucket: $BUCKET"
 has oracle && echo "   Oracle   jdbc:oracle:thin:@//oracle:1521/$ORACLE_SERVICE   $ORACLE_USER / $ORACLE_PASSWORD"

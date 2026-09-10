@@ -1,7 +1,7 @@
 {
   "name": "IAM token",
   "metadata": {
-    "comment": "Endpoint de token de IAM. Casa por metodo y ruta, sin mirar el cuerpo, asi que sirve a los DOS modos de autenticacion: el canje de API key (grant_type=apikey) y el canje del token del pod (grant_type=...cr-token). No le anadas un matcher de body: romperia el ensayo del modo container. El IamAuthenticator pide el token ANTES que el secreto, asi que sin este mapping el error del arranque no menciona a Secrets Manager para nada. 'expiration' va en epoch en SEGUNDOS (asi lo lee IamToken.isTokenValid) y se fija en 2100 para que el token no caduque durante una sesion de desarrollo."
+    "comment": "Endpoint de token de IAM. Casa por metodo y ruta, sin mirar el cuerpo. Solo hay un grant_type (apikey), asi que acotar el body no aportaria nada y si daria un fallo mas dificil de leer si algun dia cambia el SDK. El IamAuthenticator pide el token ANTES que el secreto, asi que sin este mapping el error del arranque no menciona a Secrets Manager para nada. 'expiration' va en epoch en SEGUNDOS (asi lo lee IamToken.isTokenValid) y se fija en 2100 para que el token no caduque durante una sesion de desarrollo."
   },
   "request": {
     "method": "POST",

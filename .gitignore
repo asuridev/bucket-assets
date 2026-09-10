@@ -1,10 +1,5 @@
 target/
 
-# Wrapper de Maven: se ignora a peticion del equipo. Ojo, quien clone el repo
-# necesitara un Maven instalado, porque ./mvnw ya no viaja con el.
-mvnw
-mvnw.cmd
-.mvn/
 .idea/
 *.iml
 !.vscode/tasks.json
@@ -24,5 +19,15 @@ infra/conf/mongo-ui.conf
 # La plantilla (secret-kv.json.template) si viaja.
 infra/conf/secrets-manager-stub/mappings/secret-kv.json
 
+# El service credential de Redis del stub: lo genera up.sh y lleva dentro la CA del TLS de
+# ESTE stack, que tampoco se commitea. La plantilla si viaja.
+infra/conf/secrets-manager-stub/mappings/secret-redis.json
+
+# Certificados del Redis con TLS de infra/: los genera up.sh en cada entorno.
+infra/conf/redis-tls/
+
 # Valores propios para el stub de Secrets Manager (credenciales reales para probar en local)
 deploy/secrets-manager-stub/mappings/*.local.json
+
+# Credenciales reales descargadas de IBM Cloud: no viajan al repo.
+service-credentials/
